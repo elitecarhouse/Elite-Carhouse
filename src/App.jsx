@@ -1030,4 +1030,1123 @@ function ProductoDetalle({ producto, esAdmin, sesion, onBack, onEditar, onCambia
 
         {producto.canales?.length > 0 && (
           <div style={styles.detalleCanales}>
-            <div style={styles.smallLabel}>PUBLICADO 
+            <div style={styles.smallLabel}>PUBLICADO EN</div>
+            <div style={styles.canalesRow}>
+              {producto.canales.map((cid) => {
+                const c = CANALES_SUGERIDOS.find((x) => x.id === cid);
+                if (!c) return null;
+                const Icon = c.icon;
+                return <span key={cid} style={styles.canalTag}><Icon size={13} /> {c.label}</span>;
+              })}
+            </div>
+          </div>
+        )}
+
+        <div style={styles.smallLabel}>PUBLICADO {timeLabel(producto.fechaPublicado)}</div>
+        {antiguedad && (
+          <div style={{ ...styles.antiguedadTag, ...(antiguedad.estancado ? styles.antiguedadTagEstancado : {}), marginTop: 6 }}>
+            <Clock size={11} /> {antiguedad.dias} días publicado{antiguedad.estancado ? " · considera bajar el precio o dar más impulso" : " · lleva tiempo, vale la pena revisarlo"}
+          </div>
+        )}
+      </div>
+
+      {mostrarTexto ? (
+        <div style={styles.confirmBox}>
+          <div style={styles.smallLabel}>TEXTO PARA PUBLICAR</div>
+          <pre style={styles.textoPub}>{textoPublicacion(producto)}</pre>
+          <div style={styles.row8}>
+            <button style={styles.cancelBtn} onClick={() => setMostrarTexto(false)}>Cerrar</button>
+            <button style={styles.confirmSoldBtn} onClick={copiarTexto}>{copiado ? <><Check size={15} /> Copiado</> : <><Copy size={15} /> Copiar texto</>}</button>
+          </div>
+          <button style={styles.whatsappBtn} onClick={abrirWhatsApp}><MessageCircle size={15} /> Enviar por WhatsApp</button>
+        </div>
+      ) : (
+        <button style={styles.textBtn} onClick={() => setMostrarTexto(true)}><Copy size={14} /> Generar texto para publicar</button>
+      )}
+
+      {!esAdmin && (
+        <div style={styles.lockedNote}>🔒 Solo un administrador puede hacer cambios sobre esta publicación.</div>
+      )}
+
+      {esAdmin && producto.estado !== "vendido" && (
+        <div style={styles.actionsBox}>
+          {confirmando === "vendido" ? (
+            <div style={styles.confirmBox}>
+              <div style={styles.confirmText}>Precio de venta final (si cambió):</div>
+              <PrecioInput style={styles.input} value={precioVenta} onChange={setPrecioVenta} />
+              {ventaBajoMinimo && (
+                <div style={styles.warnBox}>⚠️ Este precio está por debajo del mínimo autorizado ({money(producto.precioMinimo)}).</div>
+              )}
+              <div style={styles.confirmText}>¿Quién lo vendió? (para el Cuadro de Honor)</div>
+              <input style={styles.input} placeholder="Nombre del comisionista o vendedor" value={comisionistaNombre} onChange={(e) => setComisionistaNombre(e.target.value)} />
+              <div style={styles.confirmText}>Se le va a avisar a todo el equipo para que baje esto de: {producto.canales.map((c) => CANALES_SUGERIDOS.find((s) => s.id === c)?.label).filter(Boolean).join(", ") || "—"}</div>
+              <div style={styles.row8}>
+                <button style={styles.cancelBtn} onClick={() => setConfirmando(null)}>Cancelar</button>
+                <button style={styles.confirmSoldBtn} onClick={confirmarVenta}><Check size={15} /> Confirmar venta</button>
+              </div>
+            </div>
+          ) : confirmando === "reservar" ? (
+            <div style={styles.confirmBox}>
+              <div style={styles.confirmText}>Datos de la reserva (opcionales):</div>
+              <input style={styles.input} placeholder="Reservado para (nombre del cliente)" value={reservadoPara} onChange={(e) => setReservadoPara(e.target.value)} />
+              <input style={{ ...styles.input, marginTop: 8 }} type="date" value={reservadoHasta} onChange={(e) => setReservadoHasta(e.target.value)} />
+              <div style={styles.row8}>
+                <button style={styles.cancelBtn} onClick={() => setConfirmando(null)}>Cancelar</button>
+                <button style={styles.confirmSoldBtn} onClick={confirmarReserva}><Check size={15} /> Confirmar reserva</button>
+              </div>
+            </div>
+          ) : confirmando === "eliminar" ? (
+            <div style={styles.confirmBox}>
+              <div style={styles.confirmText}>¿Eliminar esta publicación? No se puede deshacer.</div>
+              <div style={styles.row8}>
+                <button style={styles.cancelBtn} onClick={() => setConfirmando(null)}>Cancelar</button>
+                <button style={styles.deleteConfirmBtn} onClick={() => onEliminar(producto.id)}><Trash2 size={14} /> Eliminar</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {producto.estado === "disponible" ? (
+                <button style={styles.reservarBtn} onClick={() => setConfirmando("reservar")}>Marcar reservado</button>
+              ) : (
+                <button style={styles.reservarBtn} onClick={volverADisponible}>Volver a disponible</button>
+              )}
+              <button style={styles.soldBtn} onClick={() => setConfirmando("vendido")}><Tag size={15} /> Marcar como vendido</button>
+              <button style={styles.deleteLink} onClick={() => setConfirmando("eliminar")}><Trash2 size={13} /> Eliminar publicación</button>
+            </>
+          )}
+        </div>
+      )}
+      {producto.estado === "vendido" && esAdmin && (
+        <div style={styles.actionsBox}>
+          <button style={styles.reservarBtn} onClick={() => onCambiarEstado(producto.id, "disponible")}>Deshacer venta (volver a disponible)</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminPanel({ admins, persistAdmins, sesion, onClose, papelera, onRestaurar, onEliminarDefinitivo }) {
+  const [actual, setActual] = useState("");
+  const [nueva, setNueva] = useState("");
+  const [nueva2, setNueva2] = useState("");
+  const [error, setError] = useState("");
+  const [guardado, setGuardado] = useState(false);
+
+  const [nuevoUsuario, setNuevoUsuario] = useState("");
+  const [nuevoPass, setNuevoPass] = useState("");
+  const [nuevoPass2, setNuevoPass2] = useState("");
+  const [errorNuevo, setErrorNuevo] = useState("");
+  const [creado, setCreado] = useState(false);
+
+  const yo = admins.find((a) => a.usuario === sesion.usuario);
+
+  const cambiar = async () => {
+    setError("");
+    if (!yo || actual !== yo.password) { setError("La contraseña actual no coincide."); return; }
+    if (nueva.length < 4) { setError("La nueva contraseña debe tener al menos 4 caracteres."); return; }
+    if (nueva !== nueva2) { setError("Las contraseñas nuevas no coinciden."); return; }
+    await persistAdmins(admins.map((a) => (a.usuario === sesion.usuario ? { ...a, password: nueva } : a)));
+    setGuardado(true);
+    setActual(""); setNueva(""); setNueva2("");
+    setTimeout(() => setGuardado(false), 2000);
+  };
+
+  const agregarAdmin = async () => {
+    setErrorNuevo("");
+    const u = nuevoUsuario.trim();
+    if (!u) { setErrorNuevo("Escribe un nombre de usuario."); return; }
+    if (admins.some((a) => a.usuario.toLowerCase() === u.toLowerCase())) { setErrorNuevo("Ese usuario ya existe."); return; }
+    if (nuevoPass.length < 4) { setErrorNuevo("La contraseña debe tener al menos 4 caracteres."); return; }
+    if (nuevoPass !== nuevoPass2) { setErrorNuevo("Las contraseñas no coinciden."); return; }
+    await persistAdmins([...admins, { usuario: u, password: nuevoPass }]);
+    setNuevoUsuario(""); setNuevoPass(""); setNuevoPass2("");
+    setCreado(true);
+    setTimeout(() => setCreado(false), 2000);
+  };
+
+  const eliminarAdmin = async (usuario) => {
+    if (usuario === sesion.usuario) return;
+    if (admins.length <= 1) return;
+    await persistAdmins(admins.filter((a) => a.usuario !== usuario));
+  };
+
+  return (
+    <div style={styles.screen} className="app-shell">
+      <div style={styles.detalleHead}>
+        <button style={styles.backBtn} onClick={onClose}><ChevronLeft size={16} /> Volver</button>
+      </div>
+      <div style={styles.formWrap}>
+        <div style={styles.eyebrow}>ADMINISTRADORES</div>
+        <div style={styles.title}>Cuentas con acceso total</div>
+
+        <div style={styles.smallLabel}>ACTUALES</div>
+        <div style={styles.adminsList}>
+          {admins.map((a) => (
+            <div key={a.usuario} style={styles.adminRow}>
+              <span style={styles.adminRowName}><KeyRound size={13} /> {a.usuario}{a.usuario === sesion.usuario ? " (tú)" : ""}</span>
+              {a.usuario !== sesion.usuario && admins.length > 1 && (
+                <button style={styles.adminRemoveBtn} onClick={() => eliminarAdmin(a.usuario)}><Trash2 size={13} /></button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div style={styles.smallLabel}>AGREGAR NUEVO ADMINISTRADOR</div>
+        <input style={styles.input} placeholder="Usuario" value={nuevoUsuario} onChange={(e) => { setNuevoUsuario(e.target.value); setErrorNuevo(""); }} />
+        <input style={{ ...styles.input, marginTop: 8 }} type="password" placeholder="Contraseña" value={nuevoPass} onChange={(e) => { setNuevoPass(e.target.value); setErrorNuevo(""); }} />
+        <input style={{ ...styles.input, marginTop: 8 }} type="password" placeholder="Repite la contraseña" value={nuevoPass2} onChange={(e) => { setNuevoPass2(e.target.value); setErrorNuevo(""); }} />
+        {errorNuevo && <div style={styles.errorText}>{errorNuevo}</div>}
+        <button style={styles.saveBtnSecondary} onClick={agregarAdmin}>{creado ? <><Check size={16} /> Administrador agregado</> : <><Plus size={16} /> Agregar administrador</>}</button>
+
+        <div style={styles.divider} />
+
+        <div style={styles.smallLabel}>PAPELERA {papelera && papelera.length > 0 ? `(${papelera.length})` : ""}</div>
+        {!papelera || papelera.length === 0 ? (
+          <div style={styles.confirmText}>Vacía por ahora. Lo que elimines del inventario o de solicitudes queda aquí 30 días antes de borrarse de verdad.</div>
+        ) : (
+          <div style={styles.adminsList}>
+            {papelera.map((p) => {
+              const diasRestantes = Math.max(0, UMBRAL_PAPELERA_DIAS - Math.floor((Date.now() - p.fechaEliminado) / 86400000));
+              const nombre = p.tipo === "producto" ? p.item.nombre : p.item.titulo;
+              return (
+                <div key={p.id} style={styles.papeleraRow}>
+                  <div>
+                    <div style={styles.adminRowName}>{nombre}</div>
+                    <div style={styles.historyMeta}>
+                      <span>{p.tipo === "producto" ? "Publicación" : "Solicitud"}</span>
+                      <span>· eliminado por {p.eliminadoPor || "—"}</span>
+                      <span>· se borra en {diasRestantes} día{diasRestantes === 1 ? "" : "s"}</span>
+                    </div>
+                  </div>
+                  <div style={styles.row8}>
+                    <button style={styles.papeleraRestoreBtn} onClick={() => onRestaurar(p.id)} title="Restaurar"><Check size={13} /></button>
+                    <button style={styles.adminRemoveBtn} onClick={() => onEliminarDefinitivo(p.id)} title="Eliminar definitivamente"><Trash2 size={13} /></button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div style={styles.divider} />
+
+        <div style={styles.smallLabel}>TU CONTRASEÑA</div>
+        <input style={styles.input} type="password" placeholder="Contraseña actual" value={actual} onChange={(e) => setActual(e.target.value)} />
+        <input style={{ ...styles.input, marginTop: 8 }} type="password" placeholder="Nueva contraseña" value={nueva} onChange={(e) => setNueva(e.target.value)} />
+        <input style={{ ...styles.input, marginTop: 8 }} type="password" placeholder="Repite la nueva contraseña" value={nueva2} onChange={(e) => setNueva2(e.target.value)} />
+        {error && <div style={styles.errorText}>{error}</div>}
+        <button style={styles.saveBtn} onClick={cambiar}>{guardado ? <><Check size={16} /> Guardada</> : "Guardar nueva contraseña"}</button>
+      </div>
+    </div>
+  );
+}
+
+function ProductoForm({ inicial, onCancel, onGuardar }) {
+  const [nombre, setNombre] = useState(inicial?.nombre || "");
+  const [categoria, setCategoria] = useState(inicial?.categoria || "vehiculo");
+  const [precioBase, setPrecioBase] = useState(inicial?.precioBase ?? "");
+  const [precioMinimo, setPrecioMinimo] = useState(inicial?.precioMinimo ?? "");
+  const [detalles, setDetalles] = useState(inicial?.detalles || "");
+  const [notas, setNotas] = useState(inicial?.notas || "");
+  const [canales, setCanales] = useState(inicial?.canales || []);
+  const [canalCustom, setCanalCustom] = useState("");
+  const [fotos, setFotos] = useState(inicial?.fotos || (inicial?.foto ? [inicial.foto] : []));
+  const [subiendoFoto, setSubiendoFoto] = useState(false);
+  const [fotoError, setFotoError] = useState("");
+  const [precioError, setPrecioError] = useState("");
+  const fileInputRef = useRef(null);
+
+  const toggleCanal = (id) => setCanales((prev) => (prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]));
+
+  const manejarFotos = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (files.length === 0) return;
+    const invalidas = files.some((f) => !f.type.startsWith("image/"));
+    if (invalidas) { setFotoError("Elige solo archivos de imagen."); return; }
+    setFotoError("");
+    setSubiendoFoto(true);
+    try {
+      const nuevas = await Promise.all(files.map((f) => resizeImageFile(f)));
+      setFotos((prev) => [...prev, ...nuevas.filter(Boolean)]);
+    } catch {
+      setFotoError("No se pudo procesar alguna imagen. Intenta de nuevo.");
+    } finally {
+      setSubiendoFoto(false);
+    }
+  };
+
+  const quitarFoto = (idx) => setFotos((prev) => prev.filter((_, i) => i !== idx));
+
+  const guardar = () => {
+    setPrecioError("");
+    if (!nombre.trim() || !precioBase) return;
+    if (precioMinimo !== "" && Number(precioMinimo) > Number(precioBase)) {
+      setPrecioError("El precio mínimo no puede ser mayor que el precio base.");
+      return;
+    }
+    onGuardar({
+      nombre: nombre.trim(),
+      categoria,
+      precioBase: Number(precioBase),
+      precioMinimo: precioMinimo === "" ? null : Number(precioMinimo),
+      detalles: detalles.trim(),
+      notas: notas.trim(),
+      canales,
+      fotos,
+    });
+  };
+
+  return (
+    <div style={styles.screen} className="app-shell">
+      <div style={styles.detalleHead}>
+        <button style={styles.backBtn} onClick={onCancel}><ChevronLeft size={16} /> Cancelar</button>
+      </div>
+      <div style={styles.formWrap}>
+        <div style={styles.eyebrow}>{inicial ? "EDITAR PUBLICACIÓN" : "NUEVA PUBLICACIÓN"}</div>
+
+        <div style={styles.smallLabel}>FOTOS</div>
+        <input ref={fileInputRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={manejarFotos} />
+        <div style={styles.fotosGrid}>
+          {fotos.map((f, i) => (
+            <div key={i} style={styles.fotoThumbWrap}>
+              <img src={f} alt="" style={styles.fotoThumbImg} />
+              {i === 0 && <span style={styles.fotoPortadaTag}>Portada</span>}
+              <button style={styles.photoRemoveBtn} onClick={() => quitarFoto(i)}><X size={12} /></button>
+            </div>
+          ))}
+          <button style={styles.fotoAddBox} onClick={() => fileInputRef.current?.click()} disabled={subiendoFoto}>
+            {subiendoFoto ? <span style={styles.photoUploadText}>Procesando…</span> : (<><Camera size={18} color="#7A7268" /><span style={styles.photoUploadText}>Agregar</span></>)}
+          </button>
+        </div>
+        {fotoError && <div style={styles.errorText}>{fotoError}</div>}
+
+        <div style={styles.smallLabel}>CATEGORÍA</div>
+        <div style={styles.catRow}>
+          {CATEGORIAS.map((c) => {
+            const Icon = c.icon;
+            return (
+              <button key={c.id} style={{ ...styles.catPill, ...(categoria === c.id ? styles.catPillActive : {}) }} onClick={() => setCategoria(c.id)}>
+                <Icon size={15} /> {c.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={styles.smallLabel}>NOMBRE</div>
+        <input style={styles.input} placeholder="Ej: Mazda 2, Apartamento Laureles…" value={nombre} onChange={(e) => setNombre(e.target.value)} />
+
+        <div style={styles.smallLabel}>PRECIO BASE (el que se publica)</div>
+        <PrecioInput style={styles.input} placeholder="0" value={precioBase} onChange={setPrecioBase} />
+
+        <div style={styles.smallLabel}>PRECIO MÍNIMO (margen de negociación)</div>
+        <PrecioInput style={styles.input} placeholder="Opcional — el piso hasta donde puede negociar el equipo" value={precioMinimo} onChange={setPrecioMinimo} />
+        {precioError && <div style={styles.errorText}>{precioError}</div>}
+
+        <div style={styles.smallLabel}>DETALLES</div>
+        <textarea style={styles.textarea} placeholder="Ej: 2019 · 45.000 km · Automático" value={detalles} onChange={(e) => setDetalles(e.target.value)} />
+
+        <div style={styles.smallLabel}>NOTAS INTERNAS (solo para el equipo)</div>
+        <textarea style={styles.textarea} placeholder="Ej: incluye rines nuevos, el cliente pidió separar el sofá…" value={notas} onChange={(e) => setNotas(e.target.value)} />
+
+        <div style={styles.smallLabel}>PUBLICADO EN</div>
+        <div style={styles.canalesGrid}>
+          {CANALES_SUGERIDOS.map((c) => {
+            const Icon = c.icon;
+            const activo = canales.includes(c.id);
+            return (
+              <button key={c.id} style={{ ...styles.canalChip, ...(activo ? styles.canalChipActive : {}) }} onClick={() => toggleCanal(c.id)}>
+                <Icon size={14} /> {c.label} {activo && <Check size={12} />}
+              </button>
+            );
+          })}
+          {canales.filter((c) => !CANALES_SUGERIDOS.some((s) => s.id === c)).map((c) => (
+            <button key={c} style={{ ...styles.canalChip, ...styles.canalChipActive }} onClick={() => toggleCanal(c)}>
+              {c} <Check size={12} />
+            </button>
+          ))}
+        </div>
+        <div style={styles.row8}>
+          <input style={{ ...styles.input, flex: 1 }} placeholder="Otro canal (ej: vitrina física)" value={canalCustom} onChange={(e) => setCanalCustom(e.target.value)} />
+          <button style={styles.smallAddBtn} onClick={() => { if (canalCustom.trim()) { setCanales([...canales, canalCustom.trim()]); setCanalCustom(""); } }}><Plus size={14} /></button>
+        </div>
+
+        <button style={styles.saveBtn} onClick={guardar}><Check size={16} /> {inicial ? "Guardar cambios" : "Publicar"}</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Historial de vendidos ---------------- */
+
+function agruparPorMes(vendidos) {
+  const grupos = {};
+  vendidos.forEach((p) => {
+    const d = new Date(p.fechaVendido);
+    const key = `${d.getFullYear()}-${d.getMonth()}`;
+    if (!grupos[key]) grupos[key] = { label: d.toLocaleDateString("es-CO", { month: "long", year: "numeric" }), items: [] };
+    grupos[key].items.push(p);
+  });
+  return Object.entries(grupos)
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .map(([key, val]) => val);
+}
+
+function Historial({ productos, esAdmin, sesion, onCambiarEstado, onEliminar, onVolver }) {
+  const [detalle, setDetalle] = useState(null);
+  const [search, setSearch] = useState("");
+
+  const vendidos = productos
+    .filter((p) => p.estado === "vendido")
+    .filter((p) => !search.trim() || p.nombre.toLowerCase().includes(search.trim().toLowerCase()))
+    .sort((a, b) => (b.fechaVendido || 0) - (a.fechaVendido || 0));
+
+  const grupos = agruparPorMes(vendidos);
+
+  if (detalle) {
+    return (
+      <ProductoDetalle
+        producto={detalle}
+        esAdmin={esAdmin}
+        sesion={sesion}
+        onBack={() => setDetalle(null)}
+        onEditar={() => setDetalle(null)}
+        onCambiarEstado={async (id, estado, extra) => { await onCambiarEstado(id, estado, extra); setDetalle(null); }}
+        onEliminar={async (id) => { await onEliminar(id); setDetalle(null); }}
+      />
+    );
+  }
+
+  return (
+    <div style={styles.screen} className="app-shell">
+      <div style={styles.detalleHead}>
+        <button style={styles.backBtn} onClick={onVolver}><ChevronLeft size={16} /> Inventario</button>
+      </div>
+
+      <div style={styles.historialHero}>
+        <div style={styles.historialHeroIcon}><Award size={20} color="#E1521B" /></div>
+        <div>
+          <div style={styles.eyebrow}>HISTORIAL</div>
+          <div style={styles.title}>{vendidos.length} entregados</div>
+        </div>
+      </div>
+
+      <CuadroHonor productos={productos} />
+
+      <div style={styles.searchWrap}>
+        <Search size={15} color="#7A7268" style={{ position: "absolute", left: 14, top: 13 }} />
+        <input style={styles.searchInput} placeholder="Buscar un vendido por nombre…" value={search} onChange={(e) => setSearch(e.target.value)} />
+      </div>
+
+      {vendidos.length === 0 ? (
+        <div style={styles.emptyState}>Todavía no hay publicaciones vendidas.</div>
+      ) : (
+        grupos.map((grupo) => (
+          <div key={grupo.label}>
+            <div style={styles.mesDivider}>
+              <span style={styles.mesDividerLabel}>{grupo.label}</span>
+              <span style={styles.mesDividerLine} />
+            </div>
+            <div className="grid-responsive">
+              {grupo.items.map((p) => (
+                <HistorialCard key={p.id} producto={p} onClick={() => setDetalle(p)} />
+              ))}
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+function CuadroHonor({ productos }) {
+  const vendidos = productos.filter((p) => p.estado === "vendido" && p.comisionistaNombre);
+  const mapa = {};
+  vendidos.forEach((p) => {
+    const nombre = p.comisionistaNombre.trim();
+    if (!mapa[nombre]) mapa[nombre] = { nombre, cantidad: 0, total: 0 };
+    mapa[nombre].cantidad += 1;
+    mapa[nombre].total += p.precioVenta ?? p.precioBase ?? 0;
+  });
+  const ranking = Object.values(mapa).sort((a, b) => b.cantidad - a.cantidad || b.total - a.total);
+
+  if (ranking.length === 0) return null;
+
+  return (
+    <div style={styles.honorBox}>
+      <div style={styles.honorHeader}>
+        <Trophy size={15} color="#E1521B" />
+        <span style={styles.honorTitle}>CUADRO DE HONOR</span>
+      </div>
+      {ranking.map((r, i) => (
+        <div key={r.nombre} style={styles.honorRow}>
+          <div style={{ ...styles.honorRank, ...(i === 0 ? styles.honorRankFirst : i === 1 ? styles.honorRankSecond : i === 2 ? styles.honorRankThird : {}) }}>{i + 1}</div>
+          <div style={styles.honorInfo}>
+            <div style={styles.honorNombre}>{r.nombre}</div>
+            <div style={styles.honorStats}>{r.cantidad} venta{r.cantidad === 1 ? "" : "s"} · {money(r.total)}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function HistorialCard({ producto, onClick }) {
+  const catInfo = CATEGORIAS.find((c) => c.id === producto.categoria) || CATEGORIAS.find((c) => c.id === "otro");
+  const Cat = catInfo.icon;
+  const precioFinal = producto.precioVenta ?? producto.precioBase;
+  const foto = primeraFoto(producto);
+  return (
+    <button style={styles.historyCard} onClick={onClick}>
+      {foto ? (
+        <div style={styles.cardPhotoWrap}>
+          <img src={foto} alt={producto.nombre} style={{ ...styles.cardPhoto, filter: "saturate(0.85)" }} />
+          <div style={styles.cardPhotoScrim} />
+          <div style={styles.historyStampTag}>VENDIDO</div>
+          <div style={styles.cardPhotoCaption}>
+            <div style={styles.cardNameOnPhoto}>{producto.nombre}</div>
+            <div style={styles.cardPriceOnPhoto}>{money(precioFinal)}</div>
+          </div>
+        </div>
+      ) : (
+        <div style={styles.cardTop}>
+          <div style={{ ...styles.cardIconWrap, background: catInfo.bg }}><Cat size={19} color={catInfo.fg} /></div>
+          <div style={styles.historyStampTag}>VENDIDO</div>
+        </div>
+      )}
+      {!foto && <div style={styles.cardName}>{producto.nombre}</div>}
+      <div style={styles.cardDetalles}>{producto.detalles}</div>
+      {!foto && <div style={styles.cardPrice}>{money(precioFinal)}</div>}
+      <div style={styles.historyMeta}>
+        <span>Entregado {timeLabel(producto.fechaVendido)}</span>
+        {(producto.comisionistaNombre || producto.vendidoPor) && <span>· {producto.comisionistaNombre || producto.vendidoPor}</span>}
+      </div>
+    </button>
+  );
+}
+
+/* ---------------- Solicitudes de clientes ---------------- */
+
+function rangoPresupuesto(s) {
+  if (s.presupuestoMin && s.presupuestoMax) return `${money(s.presupuestoMin)} – ${money(s.presupuestoMax)}`;
+  if (s.presupuestoMax) return `Hasta ${money(s.presupuestoMax)}`;
+  if (s.presupuestoMin) return `Desde ${money(s.presupuestoMin)}`;
+  return "Presupuesto abierto";
+}
+
+function Solicitudes({ solicitudes, persistSolicitudes, productos, papelera, persistPapelera, esAdmin, sesion, onVolver }) {
+  const [filtro, setFiltro] = useState("buscando");
+  const [search, setSearch] = useState("");
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [detalle, setDetalle] = useState(null);
+
+  const filtradas = solicitudes
+    .filter((s) => (search.trim() ? s.titulo.toLowerCase().includes(search.trim().toLowerCase()) : filtro === "todas" ? true : filtro === "estancada" ? seguimientoInfo(s)?.estancada : s.estado === filtro))
+    .sort((a, b) => (b.fechaCreada || 0) - (a.fechaCreada || 0));
+
+  const conteos = {
+    buscando: solicitudes.filter((s) => s.estado === "buscando").length,
+    conseguido: solicitudes.filter((s) => s.estado === "conseguido").length,
+    estancada: solicitudes.filter((s) => seguimientoInfo(s)?.estancada).length,
+    todas: solicitudes.length,
+  };
+
+  const guardarSolicitud = async (datos) => {
+    if (!esAdmin) return;
+    if (editing) {
+      await persistSolicitudes(solicitudes.map((s) => (s.id === editing.id ? { ...s, ...datos } : s)));
+    } else {
+      const nueva = { id: uid(), estado: "buscando", fechaCreada: Date.now(), fechaConseguido: null, resultado: "", creadoPor: sesion.usuario, ...datos };
+      await persistSolicitudes([nueva, ...solicitudes]);
+    }
+    setShowForm(false);
+    setEditing(null);
+  };
+
+  const cambiarEstado = async (id, estado, extra = {}) => {
+    if (!esAdmin) return;
+    await persistSolicitudes(solicitudes.map((s) => (s.id === id ? { ...s, estado, ...extra } : s)));
+    setDetalle((d) => (d && d.id === id ? { ...d, estado, ...extra } : d));
+  };
+
+  const eliminar = async (id) => {
+    if (!esAdmin) return;
+    const solicitud = solicitudes.find((s) => s.id === id);
+    if (solicitud) {
+      await persistPapelera([{ id: uid(), tipo: "solicitud", item: solicitud, eliminadoPor: sesion?.usuario || null, fechaEliminado: Date.now() }, ...(papelera || [])]);
+    }
+    await persistSolicitudes(solicitudes.filter((s) => s.id !== id));
+    setDetalle(null);
+  };
+
+  if (showForm && esAdmin) {
+    return (
+      <SolicitudForm
+        inicial={editing}
+        onCancel={() => { setShowForm(false); setEditing(null); }}
+        onGuardar={guardarSolicitud}
+      />
+    );
+  }
+
+  if (detalle) {
+    return (
+      <SolicitudDetalle
+        solicitud={detalle}
+        esAdmin={esAdmin}
+        productos={productos}
+        onBack={() => setDetalle(null)}
+        onEditar={() => { setEditing(detalle); setDetalle(null); setShowForm(true); }}
+        onCambiarEstado={cambiarEstado}
+        onEliminar={eliminar}
+      />
+    );
+  }
+
+  return (
+    <div style={styles.screen} className="app-shell">
+      <div style={styles.detalleHead}>
+        <button style={styles.backBtn} onClick={onVolver}><ChevronLeft size={16} /> Inventario</button>
+      </div>
+
+      <div style={styles.historialHero}>
+        <div style={styles.historialHeroIcon}><Target size={20} color="#D9A24B" /></div>
+        <div>
+          <div style={styles.eyebrow}>SOLICITUDES</div>
+          <div style={styles.title}>{conteos.buscando} buscando</div>
+        </div>
+        {esAdmin && (
+          <button style={{ ...styles.addBtn, marginLeft: "auto" }} onClick={() => setShowForm(true)}><Plus size={16} /> Nueva</button>
+        )}
+      </div>
+
+      <div style={styles.searchWrap}>
+        <Search size={15} color="#7A7268" style={{ position: "absolute", left: 14, top: 13 }} />
+        <input style={styles.searchInput} placeholder="Buscar una solicitud…" value={search} onChange={(e) => setSearch(e.target.value)} />
+      </div>
+
+      {!search.trim() && (
+        <div style={styles.filterRow}>
+          {[
+            { id: "buscando", label: "Buscando" },
+            { id: "conseguido", label: "Conseguidas" },
+            ...(conteos.estancada > 0 ? [{ id: "estancada", label: "Estancadas" }] : []),
+            { id: "todas", label: "Todas" },
+          ].map((f) => (
+            <button key={f.id} style={{ ...styles.filterPill, ...(filtro === f.id ? styles.filterPillActive : {}), ...(f.id === "estancada" ? styles.filterPillWarn : {}) }} onClick={() => setFiltro(f.id)}>
+              {f.label} <span style={styles.filterCount}>{conteos[f.id]}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="grid-responsive">
+        {filtradas.length === 0 && (
+          <div style={styles.emptyState}>No hay solicitudes por aquí.</div>
+        )}
+        {filtradas.map((s) => (
+          <SolicitudCard key={s.id} solicitud={s} onClick={() => setDetalle(s)} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SolicitudCard({ solicitud, onClick }) {
+  const catInfo = CATEGORIAS.find((c) => c.id === solicitud.categoria) || CATEGORIAS.find((c) => c.id === "otro");
+  const Cat = catInfo.icon;
+  const meta = SOLICITUD_ESTADO_META[solicitud.estado];
+  const seguimiento = seguimientoInfo(solicitud);
+  return (
+    <button style={styles.card} onClick={onClick}>
+      <div style={styles.cardTop}>
+        <div style={{ ...styles.cardIconWrap, background: catInfo.bg }}><Cat size={19} color={catInfo.fg} /></div>
+        <span style={{ ...styles.cardBadge, background: meta.color }}>{meta.label}</span>
+      </div>
+      <div style={styles.cardName}>{solicitud.titulo}</div>
+      <div style={styles.cardDetalles}>{solicitud.caracteristicas}</div>
+      <div style={styles.cardPrice}>{rangoPresupuesto(solicitud)}</div>
+      {solicitud.clienteNombre && <div style={styles.historyMeta}>Para {solicitud.clienteNombre}</div>}
+      {seguimiento && (
+        <div style={{ ...styles.antiguedadTag, ...(seguimiento.estancada ? styles.antiguedadTagEstancado : {}) }}>
+          <Clock size={11} /> {seguimiento.dias} días buscando{seguimiento.estancada ? " · dale seguimiento" : ""}
+        </div>
+      )}
+    </button>
+  );
+}
+
+function SolicitudForm({ inicial, onCancel, onGuardar }) {
+  const [titulo, setTitulo] = useState(inicial?.titulo || "");
+  const [categoria, setCategoria] = useState(inicial?.categoria || "vehiculo");
+  const [caracteristicas, setCaracteristicas] = useState(inicial?.caracteristicas || "");
+  const [presupuestoMin, setPresupuestoMin] = useState(inicial?.presupuestoMin ?? "");
+  const [presupuestoMax, setPresupuestoMax] = useState(inicial?.presupuestoMax ?? "");
+  const [clienteNombre, setClienteNombre] = useState(inicial?.clienteNombre || "");
+  const [notas, setNotas] = useState(inicial?.notas || "");
+  const [error, setError] = useState("");
+
+  const guardar = () => {
+    setError("");
+    if (!titulo.trim() || !caracteristicas.trim()) { setError("El título y las características son obligatorios."); return; }
+    if (presupuestoMin !== "" && presupuestoMax !== "" && Number(presupuestoMin) > Number(presupuestoMax)) {
+      setError("El presupuesto mínimo no puede ser mayor que el máximo.");
+      return;
+    }
+    onGuardar({
+      titulo: titulo.trim(),
+      categoria,
+      caracteristicas: caracteristicas.trim(),
+      presupuestoMin: presupuestoMin === "" ? null : Number(presupuestoMin),
+      presupuestoMax: presupuestoMax === "" ? null : Number(presupuestoMax),
+      clienteNombre: clienteNombre.trim() || null,
+      notas: notas.trim(),
+    });
+  };
+
+  return (
+    <div style={styles.screen} className="app-shell">
+      <div style={styles.detalleHead}>
+        <button style={styles.backBtn} onClick={onCancel}><ChevronLeft size={16} /> Cancelar</button>
+      </div>
+      <div style={styles.formWrap}>
+        <div style={styles.eyebrow}>{inicial ? "EDITAR SOLICITUD" : "NUEVA SOLICITUD"}</div>
+
+        <div style={styles.smallLabel}>CATEGORÍA</div>
+        <div style={styles.catRow}>
+          {CATEGORIAS.map((c) => {
+            const Icon = c.icon;
+            return (
+              <button key={c.id} style={{ ...styles.catPill, ...(categoria === c.id ? styles.catPillActive : {}) }} onClick={() => setCategoria(c.id)}>
+                <Icon size={15} /> {c.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={styles.smallLabel}>TÍTULO</div>
+        <input style={styles.input} placeholder="Ej: Camioneta 4x4 para cliente en Envigado" value={titulo} onChange={(e) => setTitulo(e.target.value)} />
+
+        <div style={styles.smallLabel}>CARACTERÍSTICAS QUE BUSCA</div>
+        <textarea style={styles.textarea} placeholder="Ej: SUV automática, menos de 80.000 km, blanca o gris, modelo 2018 en adelante" value={caracteristicas} onChange={(e) => setCaracteristicas(e.target.value)} />
+
+        <div style={styles.smallLabel}>PRESUPUESTO MÍNIMO (opcional)</div>
+        <PrecioInput style={styles.input} placeholder="0" value={presupuestoMin} onChange={setPresupuestoMin} />
+
+        <div style={styles.smallLabel}>PRESUPUESTO MÁXIMO</div>
+        <PrecioInput style={styles.input} placeholder="0" value={presupuestoMax} onChange={setPresupuestoMax} />
+
+        <div style={styles.smallLabel}>CLIENTE (opcional)</div>
+        <input style={styles.input} placeholder="Nombre del cliente" value={clienteNombre} onChange={(e) => setClienteNombre(e.target.value)} />
+
+        <div style={styles.smallLabel}>NOTAS (opcional)</div>
+        <textarea style={styles.textarea} placeholder="Cualquier detalle adicional para el equipo" value={notas} onChange={(e) => setNotas(e.target.value)} />
+
+        {error && <div style={styles.errorText}>{error}</div>}
+        <button style={styles.saveBtn} onClick={guardar}><Check size={16} /> {inicial ? "Guardar cambios" : "Publicar solicitud"}</button>
+      </div>
+    </div>
+  );
+}
+
+function SolicitudDetalle({ solicitud, esAdmin, productos, onBack, onEditar, onCambiarEstado, onEliminar }) {
+  const [confirmando, setConfirmando] = useState(null);
+  const [resultado, setResultado] = useState("");
+  const [buscarProducto, setBuscarProducto] = useState("");
+  const [productoElegido, setProductoElegido] = useState(null);
+  const catInfo = CATEGORIAS.find((c) => c.id === solicitud.categoria) || CATEGORIAS.find((c) => c.id === "otro");
+  const Cat = catInfo.icon;
+  const meta = SOLICITUD_ESTADO_META[solicitud.estado];
+
+  const productoVinculado = solicitud.productoVinculadoId ? (productos || []).find((p) => p.id === solicitud.productoVinculadoId) : null;
+
+  const coincidenciasBusqueda = buscarProducto.trim()
+    ? (productos || []).filter((p) => p.nombre.toLowerCase().includes(buscarProducto.trim().toLowerCase())).slice(0, 6)
+    : [];
+
+  const marcarConseguido = () => {
+    onCambiarEstado(solicitud.id, "conseguido", {
+      fechaConseguido: Date.now(),
+      resultado: resultado.trim(),
+      productoVinculadoId: productoElegido?.id || null,
+    });
+    setConfirmando(null);
+    setProductoElegido(null);
+    setBuscarProducto("");
+  };
+
+  return (
+    <div style={styles.screen} className="app-shell">
+      <div style={styles.detalleHead}>
+        <button style={styles.backBtn} onClick={onBack}><ChevronLeft size={16} /> Volver</button>
+        {esAdmin && <button style={styles.editIconBtn} onClick={onEditar}><Pencil size={14} /></button>}
+      </div>
+
+      <div style={styles.detalleCard}>
+        <div style={styles.detalleIconRow}>
+          <div style={{ ...styles.detalleIconWrap, background: catInfo.bg }}><Cat size={24} color={catInfo.fg} /></div>
+          <span style={{ ...styles.cardBadge, background: meta.color }}>{meta.label}</span>
+        </div>
+
+        <div style={styles.detalleName}>{solicitud.titulo}</div>
+        <div style={styles.detalleDetalles}>{solicitud.caracteristicas}</div>
+        <div style={styles.detallePrice}>{rangoPresupuesto(solicitud)}</div>
+
+        {solicitud.clienteNombre && (
+          <div style={styles.ventaInfoBox}>
+            <div style={styles.ventaInfoRow}><span>Cliente</span><b>{solicitud.clienteNombre}</b></div>
+          </div>
+        )}
+
+        {solicitud.estado === "conseguido" && (
+          <div style={styles.ventaInfoBox}>
+            <div style={styles.ventaInfoRow}><span>Conseguido el</span><b>{timeLabel(solicitud.fechaConseguido)}</b></div>
+            {solicitud.resultado && <div style={styles.ventaInfoRow}><span>Detalle</span><b>{solicitud.resultado}</b></div>}
+          </div>
+        )}
+
+        {productoVinculado && (
+          <div style={styles.vinculoBox}>
+            <div style={styles.smallLabel}>PUBLICACIÓN VINCULADA</div>
+            <div style={styles.vinculoRow}>
+              {primeraFoto(productoVinculado) ? (
+                <img src={primeraFoto(productoVinculado)} alt="" style={styles.vinculoThumb} />
+              ) : (
+                <div style={{ ...styles.vinculoThumb, ...styles.vinculoThumbIcon, background: catInfo.bg }}><Cat size={18} color={catInfo.fg} /></div>
+              )}
+              <div>
+                <div style={styles.vinculoNombre}>{productoVinculado.nombre}</div>
+                <div style={styles.vinculoPrecio}>{money(productoVinculado.precioBase)}</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {solicitud.notas && (
+          <div style={styles.notasBox}>
+            <div style={styles.smallLabel}>NOTAS</div>
+            <div style={styles.notasText}>{solicitud.notas}</div>
+          </div>
+        )}
+
+        <div style={styles.smallLabel}>PUBLICADA {timeLabel(solicitud.fechaCreada)}</div>
+        {seguimientoInfo(solicitud) && (
+          <div style={{ ...styles.antiguedadTag, ...(seguimientoInfo(solicitud).estancada ? styles.antiguedadTagEstancado : {}), marginTop: 6 }}>
+            <Clock size={11} /> {seguimientoInfo(solicitud).dias} días buscando{seguimientoInfo(solicitud).estancada ? " · dale seguimiento al cliente, puede estar enfriándose" : " · vale la pena preguntarle al cliente cómo va"}
+          </div>
+        )}
+      </div>
+
+      {!esAdmin && (
+        <div style={styles.lockedNote}>🔒 Solo un administrador puede actualizar esta solicitud.</div>
+      )}
+
+      {esAdmin && (
+        <div style={styles.actionsBox}>
+          {confirmando === "conseguido" ? (
+            <div style={styles.confirmBox}>
+              <div style={styles.confirmText}>¿Se consiguió con una publicación del inventario? (opcional)</div>
+              <input style={styles.input} placeholder="Buscar por nombre…" value={buscarProducto} onChange={(e) => { setBuscarProducto(e.target.value); setProductoElegido(null); }} />
+              {productoElegido ? (
+                <div style={styles.vinculoElegidoRow}>
+                  <span>{productoElegido.nombre} · {money(productoElegido.precioBase)}</span>
+                  <button style={styles.notifClose} onClick={() => { setProductoElegido(null); setBuscarProducto(""); }}><X size={13} /></button>
+                </div>
+              ) : coincidenciasBusqueda.length > 0 ? (
+                <div style={styles.vinculoLista}>
+                  {coincidenciasBusqueda.map((p) => (
+                    <button key={p.id} style={styles.vinculoOpcion} onClick={() => { setProductoElegido(p); setBuscarProducto(p.nombre); }}>
+                      {p.nombre} · {money(p.precioBase)}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <div style={styles.confirmText}>O describe cómo se consiguió (opcional):</div>
+              <input style={styles.input} placeholder="Ej: se compró a un proveedor externo…" value={resultado} onChange={(e) => setResultado(e.target.value)} />
+              <div style={styles.row8}>
+                <button style={styles.cancelBtn} onClick={() => { setConfirmando(null); setProductoElegido(null); setBuscarProducto(""); }}>Cancelar</button>
+                <button style={styles.confirmSoldBtn} onClick={marcarConseguido}><Check size={15} /> Confirmar</button>
+              </div>
+            </div>
+          ) : confirmando === "eliminar" ? (
+            <div style={styles.confirmBox}>
+              <div style={styles.confirmText}>¿Eliminar esta solicitud? No se puede deshacer.</div>
+              <div style={styles.row8}>
+                <button style={styles.cancelBtn} onClick={() => setConfirmando(null)}>Cancelar</button>
+                <button style={styles.deleteConfirmBtn} onClick={() => onEliminar(solicitud.id)}><Trash2 size={14} /> Eliminar</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {solicitud.estado === "buscando" && (
+                <>
+                  <button style={styles.soldBtn} onClick={() => setConfirmando("conseguido")}><Target size={15} /> Marcar como conseguido</button>
+                  <button style={styles.reservarBtn} onClick={() => onCambiarEstado(solicitud.id, "cancelada")}>Cancelar solicitud</button>
+                </>
+              )}
+              {solicitud.estado !== "buscando" && (
+                <button style={styles.reservarBtn} onClick={() => onCambiarEstado(solicitud.id, "buscando", { fechaConseguido: null, resultado: "", productoVinculadoId: null })}>Reabrir búsqueda</button>
+              )}
+              <button style={styles.deleteLink} onClick={() => setConfirmando("eliminar")}><Trash2 size={13} /> Eliminar solicitud</button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- estilos ---------------- */
+
+const fontImports = `
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap');
+
+.app-shell {
+  width: 100%;
+  box-sizing: border-box;
+}
+@media (min-width: 720px) {
+  .app-shell { max-width: 760px; margin-left: auto; margin-right: auto; }
+}
+@media (min-width: 1100px) {
+  .app-shell { max-width: 1080px; }
+}
+
+.grid-responsive {
+  display: grid;
+  gap: 13px;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 640px) {
+  .grid-responsive { grid-template-columns: repeat(2, 1fr); }
+}
+@media (min-width: 1024px) {
+  .grid-responsive { grid-template-columns: repeat(3, 1fr); }
+}
+`;
+
+const styles = {
+  app: { fontFamily: "'Inter', sans-serif", minHeight: "100vh", background: "#141110", display: "flex", flexDirection: "column" },
+  loadingScreen: { minHeight: "100vh", background: "radial-gradient(ellipse at 50% 30%, #2A2323 0%, #171615 65%, #100F0F 100%)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 18 },
+  loadingLogo: { width: 120, height: "auto", opacity: 0.95, filter: "drop-shadow(0 4px 18px rgba(225,82,27,0.25))" },
+  loadingStamp: { fontFamily: "'IBM Plex Mono', monospace", color: "#9A8F8A", letterSpacing: 3, fontSize: 11 },
+
+  loginScreen: { position: "relative", minHeight: "100vh", background: "radial-gradient(ellipse at 50% 20%, #2E2626 0%, #181615 60%, #0F0E0E 100%)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, gap: 26 },
+  cornerAdminBtn: { position: "absolute", top: 18, right: 18, display: "flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.14)", color: "#C9C2B4", borderRadius: 20, padding: "8px 13px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" },
+  loginLogo: { width: 148, height: "auto", filter: "drop-shadow(0 6px 24px rgba(225,82,27,0.22))" },
+  loginCard: { background: "#1E1A17", border: "1px solid #332C25", borderRadius: 20, padding: "32px 28px", width: "100%", maxWidth: 380, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, boxSizing: "border-box", boxShadow: "0 24px 60px rgba(0,0,0,0.5)" },
+  landingCard: { background: "#1E1A17", border: "1px solid #332C25", borderRadius: 20, padding: "34px 28px", width: "100%", maxWidth: 380, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", gap: 4, boxSizing: "border-box", boxShadow: "0 24px 60px rgba(0,0,0,0.5)" },
+  landingSubtitle: { fontSize: 13.5, color: "#8B8377", lineHeight: 1.5, marginBottom: 20, maxWidth: 280 },
+  landingEnterBtn: { width: "100%", background: "#E1521B", color: "#FFFFFF", border: "none", borderRadius: 0, clipPath: "polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 0 100%)", padding: "16px", fontSize: 14.5, fontWeight: 700, cursor: "pointer", boxShadow: "0 10px 24px rgba(225,82,27,0.32)" },
+  loginEyebrow: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, color: "#C98A4D", letterSpacing: 3, marginTop: 2, fontWeight: 600 },
+  loginTitle: { fontFamily: "'Bebas Neue', sans-serif", fontSize: 34, letterSpacing: 1, color: "#F4F0E9", marginBottom: 16, marginTop: 2 },
+  loginList: { display: "flex", flexDirection: "column", gap: 8, width: "100%" },
+  loginBtn: { display: "flex", alignItems: "center", gap: 10, background: "#262019", border: "1px solid #332C25", borderRadius: 12, padding: "14px 15px", fontSize: 14, fontWeight: 600, color: "#F4F0E9", cursor: "pointer", width: "100%", boxSizing: "border-box" },
+  adminLink: { display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", color: "#C98A4D", fontSize: 11.5, fontWeight: 600, cursor: "pointer", marginTop: 16 },
+  errorText: { color: "#E2503B", fontSize: 12, fontWeight: 600, marginTop: 4 },
+  headerBtnRow: { display: "flex", gap: 8, alignItems: "center" },
+  settingsBtn: { width: 40, height: 40, borderRadius: 11, border: "1px solid #332C25", background: "#1E1A17", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#B0A89B" },
+  loginNewRow: { display: "flex", gap: 8, width: "100%", marginTop: 12 },
+  loginEnterBtn: { background: "#E1521B", color: "#FFFFFF", border: "none", borderRadius: 0, clipPath: "polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%)", padding: "0 20px", fontWeight: 700, fontSize: 13, cursor: "pointer", boxShadow: "0 6px 16px rgba(225,82,27,0.32)" },
+  readonlyChip: { display: "flex", alignItems: "center", gap: 6, background: "#262019", borderRadius: 10, padding: "10px 12px", fontSize: 13, fontWeight: 600, color: "#B0A89B", marginBottom: 4 },
+
+  topBar: { display: "flex", padding: "13px 18px", background: "linear-gradient(115deg, #1B1817 0%, #1B1817 55%, #241D18 100%)", flexShrink: 0, boxShadow: "0 2px 12px rgba(0,0,0,0.35)", position: "relative", zIndex: 5, borderBottom: "1px solid rgba(225,82,27,0.25)" },
+  topBarInner: { display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" },
+  brand: { display: "flex", alignItems: "center" },
+  topBarLogo: { height: 30, width: "auto" },
+  topBarRight: { display: "flex", alignItems: "center", gap: 8 },
+  historialBtn: { position: "relative", width: 34, height: 34, borderRadius: 20, border: "1px solid rgba(255,255,255,0.14)", background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#D9A24B" },
+  navBadge: { position: "absolute", top: -4, right: -4, minWidth: 16, height: 16, borderRadius: 8, background: "#E14B3A", color: "#FFFFFF", fontSize: 9.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px", border: "1.5px solid #1B1817" },
+  historialBtnActive: { background: "#E1521B", border: "1px solid #E1521B", color: "#FFFFFF" },
+  userChip: { display: "flex", alignItems: "center", gap: 6, background: "#2F2A28", color: "#E4DED2", border: "none", borderRadius: 20, padding: "7px 13px", fontSize: 12, fontWeight: 600, cursor: "pointer" },
+
+  notifWrap: { display: "flex", flexDirection: "column", gap: 6, padding: "10px 16px 0" },
+  notifBanner: { display: "flex", alignItems: "flex-start", gap: 8, background: "#3A1F1A", border: "1px solid #E14B3A", color: "#FFE8E2", borderRadius: 12, padding: "12px 13px", fontSize: 13, boxShadow: "0 8px 20px rgba(0,0,0,0.35)" },
+  notifBannerOk: { background: "#1F2E22", border: "1px solid #4FAE78", color: "#DFF2E6" },
+  notifText: { flex: 1, lineHeight: 1.45 },
+  notifClose: { background: "none", border: "none", color: "#FFE8E2", opacity: 0.85, cursor: "pointer", padding: 2 },
+
+  screen: { flex: 1, overflowY: "auto", padding: "20px 18px 44px" },
+  headerRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 16 },
+  eyebrow: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, color: "#8B8377", letterSpacing: 2, fontWeight: 600 },
+  title: { fontFamily: "'Bebas Neue', sans-serif", fontSize: 30, letterSpacing: 0.5, color: "#F4F0E9", marginTop: 2 },
+  addBtn: { display: "flex", alignItems: "center", gap: 6, background: "#E1521B", color: "#FFFFFF", border: "none", borderRadius: 0, clipPath: "polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%)", padding: "11px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", boxShadow: "0 6px 16px rgba(225,82,27,0.3)" },
+
+  searchWrap: { position: "relative", marginBottom: 14 },
+  searchInput: { width: "100%", boxSizing: "border-box", border: "1px solid #332C25", borderRadius: 12, padding: "12px 12px 12px 38px", fontSize: 14, background: "#1E1A17", color: "#F4F0E9" },
+
+  filterRow: { display: "flex", gap: 6, overflowX: "auto", scrollSnapType: "x proximity", paddingBottom: 2, marginBottom: 16 },
+  filterPill: { flexShrink: 0, scrollSnapAlign: "start", display: "flex", alignItems: "center", gap: 5, background: "#1E1A17", border: "1px solid #332C25", color: "#B0A89B", borderRadius: 18, padding: "9px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" },
+  filterPillActive: { background: "#E1521B", color: "#FFFFFF", border: "1px solid #E1521B" },
+  filterCount: { fontFamily: "'IBM Plex Mono', monospace", opacity: 0.75, fontSize: 11 },
+
+  emptyState: { textAlign: "center", color: "#7A7268", fontSize: 13, fontStyle: "italic", padding: "36px 0" },
+
+  card: { position: "relative", overflow: "hidden", textAlign: "left", background: "#1E1A17", border: "1px solid #302A24", borderRadius: 16, padding: 17, cursor: "pointer", display: "flex", flexDirection: "column", gap: 7, boxShadow: "0 4px 16px rgba(0,0,0,0.25)" },
+  cardTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  cardIconWrap: { width: 38, height: 38, borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center" },
+  cardBadge: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 9.5, color: "#FFFFFF", padding: "4px 10px 4px 12px", borderRadius: 0, clipPath: "polygon(8px 0, 100% 0, 100% 100%, 0 100%, 0 8px)", fontWeight: 700, letterSpacing: 0.6 },
+  cardBadgeOnPhoto: { position: "absolute", top: 10, right: 10, boxShadow: "0 2px 8px rgba(0,0,0,0.4)" },
+  cardPhotoWrap: { position: "relative", width: `calc(100% + 34px)`, marginLeft: -17, marginTop: -17, marginBottom: 3 },
+  cardPhoto: { width: "100%", aspectRatio: "16 / 10", objectFit: "cover", display: "block", background: "#2A241E" },
+  cardPhotoScrim: { position: "absolute", left: 0, right: 0, bottom: 0, height: "62%", background: "linear-gradient(to top, rgba(10,9,8,0.92) 0%, rgba(10,9,8,0.4) 55%, rgba(10,9,8,0) 100%)" },
+  cardPhotoCaption: { position: "absolute", left: 15, right: 15, bottom: 12 },
+  cardNameOnPhoto: { fontSize: 17, fontWeight: 700, color: "#FFFFFF", letterSpacing: -0.1, textShadow: "0 1px 6px rgba(0,0,0,0.5)" },
+  cardPriceOnPhoto: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 15.5, fontWeight: 700, color: "#F2A876", marginTop: 2, letterSpacing: -0.2 },
+  cardName: { fontSize: 16.5, fontWeight: 700, color: "#F4F0E9", marginTop: 2, letterSpacing: -0.1 },
+  cardDetalles: { fontSize: 12.5, color: "#8B8377" },
+  cardPrice: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 17, fontWeight: 700, color: "#F4F0E9", marginTop: 3, letterSpacing: -0.3 },
+  cardChannels: { display: "flex", gap: 9, marginTop: 5 },
+
+  soldStampWrap: { position: "absolute", top: 12, right: -36, transform: "rotate(28deg)", zIndex: 2 },
+  soldStamp: { fontFamily: "'Bebas Neue', sans-serif", fontSize: 15, letterSpacing: 2.5, color: "#FFFFFF", background: "#C23B2E", transform: "skewX(-8deg)", padding: "3px 36px", boxShadow: "0 2px 6px rgba(0,0,0,0.4)" },
+  soldStampWrapBig: { position: "absolute", top: 26, right: -48, transform: "rotate(28deg)", zIndex: 2 },
+  soldStampBig: { fontFamily: "'Bebas Neue', sans-serif", fontSize: 25, letterSpacing: 3.5, color: "#FFFFFF", background: "#C23B2E", transform: "skewX(-8deg)", padding: "5px 50px", boxShadow: "0 3px 10px rgba(0,0,0,0.45)" },
+
+  detalleHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
+  backBtn: { display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: "#B0A89B", fontSize: 13, fontWeight: 600, cursor: "pointer" },
+  editIconBtn: { width: 34, height: 34, borderRadius: 10, border: "1px solid #332C25", background: "#1E1A17", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#B0A89B" },
+
+  detalleCard: { position: "relative", overflow: "hidden", background: "#1E1A17", border: "1px solid #302A24", borderRadius: 18, padding: 22, marginBottom: 18, boxShadow: "0 8px 28px rgba(0,0,0,0.3)" },
+  detalleIconRow: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+  detalleIconWrap: { width: 48, height: 48, borderRadius: 13, display: "flex", alignItems: "center", justifyContent: "center" },
+  detallePhotoWrap: { position: "relative", width: `calc(100% + 44px)`, marginLeft: -22, marginTop: -22, marginBottom: 16 },
+  detallePhoto: { width: "100%", aspectRatio: "16 / 9", objectFit: "cover", display: "block", background: "#2A241E" },
+  detalleName: { fontFamily: "'Bebas Neue', sans-serif", fontSize: 28, color: "#F4F0E9", letterSpacing: 0.5 },
+  detalleDetalles: { fontSize: 13.5, color: "#8B8377", marginTop: 3 },
+  detallePrice: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 700, color: "#F4F0E9", marginTop: 12, letterSpacing: -0.4 },
+
+  ventaInfoBox: { background: "#262019", borderRadius: 12, padding: 14, marginTop: 16, display: "flex", flexDirection: "column", gap: 6 },
+  ventaInfoRow: { display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "#B0A89B" },
+
+  margenBox: { background: "rgba(225,82,27,0.09)", border: "1px solid rgba(225,82,27,0.3)", borderRadius: 12, padding: 14, marginTop: 16, display: "flex", flexDirection: "column", gap: 7 },
+  margenLabel: { display: "flex", alignItems: "center", gap: 5, fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#E1521B", letterSpacing: 1, fontWeight: 700 },
+  margenRow: { display: "flex", justifyContent: "space-between", fontSize: 13, color: "#D8D2C7" },
+  margenMinValue: { color: "#F2A876" },
+  warnBox: { background: "rgba(225,82,27,0.12)", border: "1px solid #E1521B", color: "#F2A876", borderRadius: 10, padding: "10px 12px", fontSize: 12, fontWeight: 600, lineHeight: 1.45 },
+
+  detalleCanales: { marginTop: 18 },
+  smallLabel: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#7A7268", letterSpacing: 1.2, marginBottom: 8, marginTop: 16, fontWeight: 600 },
+  canalesRow: { display: "flex", flexWrap: "wrap", gap: 6 },
+  canalTag: { display: "flex", alignItems: "center", gap: 5, background: "#262019", borderRadius: 16, padding: "6px 11px", fontSize: 11.5, color: "#B0A89B", fontWeight: 600 },
+  lockedNote: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#7A7268", fontStyle: "italic", padding: "10px 2px" },
+
+  actionsBox: { display: "flex", flexDirection: "column", gap: 9 },
+  reservarBtn: { background: "#1E1A17", border: "1px solid #332C25", color: "#F4F0E9", borderRadius: 12, padding: "14px", fontSize: 13.5, fontWeight: 600, cursor: "pointer" },
+  soldBtn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#C23B2E", color: "#FFFFFF", border: "none", borderRadius: 12, padding: "15px", fontSize: 14, fontWeight: 700, cursor: "pointer", boxShadow: "0 8px 20px rgba(194,59,46,0.3)" },
+  deleteLink: { display: "flex", alignItems: "center", justifyContent: "center", gap: 5, background: "none", border: "none", color: "#7A7268", fontSize: 12, cursor: "pointer", padding: 6 },
+
+  confirmBox: { background: "#1E1A17", border: "1px solid #302A24", borderRadius: 14, padding: 16, display: "flex", flexDirection: "column", gap: 9, boxShadow: "0 4px 16px rgba(0,0,0,0.3)" },
+  confirmText: { fontSize: 12.5, color: "#B0A89B", lineHeight: 1.55 },
+  row8: { display: "flex", gap: 8 },
+  cancelBtn: { flex: 1, background: "#262019", border: "none", color: "#B0A89B", borderRadius: 10, padding: "12px", fontSize: 13, fontWeight: 600, cursor: "pointer" },
+  confirmSoldBtn: { flex: 2, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: "#C23B2E", color: "#FFFFFF", border: "none", borderRadius: 10, padding: "12px", fontSize: 13, fontWeight: 700, cursor: "pointer", boxShadow: "0 6px 16px rgba(0,0,0,0.3)" },
+  whatsappBtn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 7, background: "#25D366", color: "#0B1F14", border: "none", borderRadius: 10, padding: "12px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginTop: 9, width: "100%", boxShadow: "0 6px 16px rgba(37,211,102,0.25)" },
+  deleteConfirmBtn: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: "#0F0D0C", color: "#FFFFFF", border: "1px solid #332C25", borderRadius: 10, padding: "12px", fontSize: 13, fontWeight: 700, cursor: "pointer" },
+
+  formWrap: { display: "flex", flexDirection: "column" },
+  catRow: { display: "flex", flexWrap: "wrap", gap: 8 },
+  catPill: { flex: "1 1 40%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: "#1E1A17", border: "1px solid #332C25", color: "#B0A89B", borderRadius: 11, padding: "12px 8px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" },
+  catPillActive: { background: "#E1521B", color: "#FFFFFF", border: "1px solid #E1521B" },
+  input: { width: "100%", boxSizing: "border-box", border: "1px solid #332C25", borderRadius: 11, padding: "13px 12px", fontSize: 14, background: "#262019", color: "#F4F0E9" },
+  textarea: { width: "100%", boxSizing: "border-box", border: "1px solid #332C25", borderRadius: 11, padding: "13px 12px", fontSize: 14, background: "#262019", color: "#F4F0E9", minHeight: 72, fontFamily: "inherit", resize: "vertical" },
+  canalesGrid: { display: "flex", flexWrap: "wrap", gap: 8 },
+  canalChip: { display: "flex", alignItems: "center", gap: 6, background: "#1E1A17", border: "1px solid #332C25", color: "#B0A89B", borderRadius: 20, padding: "10px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" },
+  canalChipActive: { background: "#E1521B", color: "#FFFFFF", border: "1px solid #E1521B" },
+  smallAddBtn: { width: 46, background: "#E1521B", color: "#FFFFFF", border: "none", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" },
+  saveBtn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#E1521B", color: "#FFFFFF", border: "none", borderRadius: 0, clipPath: "polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 0 100%)", padding: "16px", fontSize: 14, fontWeight: 700, cursor: "pointer", marginTop: 24, boxShadow: "0 10px 24px rgba(225,82,27,0.3)" },
+  saveBtnSecondary: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#262019", color: "#F4F0E9", border: "1px solid #332C25", borderRadius: 12, padding: "14px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", marginTop: 12 },
+  adminsList: { display: "flex", flexDirection: "column", gap: 6, marginBottom: 4 },
+  adminRow: { display: "flex", alignItems: "center", justifyContent: "space-between", background: "#1E1A17", border: "1px solid #302A24", borderRadius: 11, padding: "10px 12px" },
+  adminRowName: { display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: "#F4F0E9" },
+  adminRemoveBtn: { background: "none", border: "none", color: "#E2503B", cursor: "pointer", padding: 4, display: "flex", alignItems: "center" },
+  divider: { height: 1, background: "#302A24", margin: "26px 0 6px" },
+
+  photoUploadText: { fontSize: 12.5, color: "#7A7268", fontWeight: 600 },
+  photoChangeBtn: { position: "absolute", left: 10, bottom: 10, display: "flex", alignItems: "center", gap: 5, background: "rgba(15,13,11,0.8)", color: "#FFFFFF", border: "none", borderRadius: 10, padding: "8px 12px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" },
+  photoRemoveBtn: { position: "absolute", right: 10, top: 10, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(15,13,11,0.8)", color: "#FFFFFF", border: "none", borderRadius: 9, cursor: "pointer" },
+
+  historialHero: { display: "flex", alignItems: "center", gap: 12, marginBottom: 16 },
+  historialHeroIcon: { width: 44, height: 44, borderRadius: 12, background: "rgba(225,82,27,0.12)", border: "1px solid rgba(225,82,27,0.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  mesDivider: { display: "flex", alignItems: "center", gap: 10, margin: "22px 0 12px" },
+  mesDividerLabel: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, color: "#C98A4D", letterSpacing: 1.5, fontWeight: 700, textTransform: "uppercase", whiteSpace: "nowrap" },
+  mesDividerLine: { flex: 1, height: 1, background: "#302A24" },
+  historyCard: { position: "relative", overflow: "hidden", textAlign: "left", background: "#1E1A17", border: "1px solid #302A24", borderRadius: 16, padding: 17, cursor: "pointer", display: "flex", flexDirection: "column", gap: 7, boxShadow: "0 4px 16px rgba(0,0,0,0.25)" },
+  historyStampTag: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 9, color: "#FFFFFF", background: "#C23B2E", padding: "4px 10px", letterSpacing: 1, fontWeight: 700, position: "absolute", top: 10, right: 10, clipPath: "polygon(6px 0, 100% 0, 100% 100%, 0 100%, 0 6px)" },
+  historyMeta: { display: "flex", gap: 4, fontSize: 11, color: "#7A7268", marginTop: 2 },
+
+  cardPhotoCount: { position: "absolute", top: 10, left: 10, display: "flex", alignItems: "center", gap: 4, background: "rgba(15,13,11,0.75)", color: "#FFFFFF", borderRadius: 12, padding: "3px 8px", fontSize: 10, fontWeight: 700 },
+  cardReservaTag: { fontSize: 11.5, color: "#D9A24B", fontWeight: 600, background: "rgba(217,161,92,0.12)", borderRadius: 8, padding: "5px 9px", display: "inline-block", width: "fit-content" },
+  cardReservaTagVencida: { color: "#E14B3A", background: "rgba(225,75,58,0.14)" },
+
+  thumbStrip: { position: "absolute", left: 10, right: 10, bottom: 10, display: "flex", gap: 6, overflowX: "auto" },
+  thumbBtn: { width: 44, height: 44, borderRadius: 8, overflow: "hidden", border: "2px solid rgba(255,255,255,0.35)", padding: 0, flexShrink: 0, cursor: "pointer" },
+  thumbBtnActive: { border: "2px solid #E1521B" },
+  thumbImg: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
+
+  notasBox: { background: "rgba(217,161,92,0.08)", border: "1px solid rgba(217,161,92,0.28)", borderRadius: 12, padding: 14, marginTop: 16 },
+  notasText: { fontSize: 13, color: "#D8D2C7", lineHeight: 1.5, marginTop: 2 },
+  reservaVencidaBox: { border: "1px solid #E14B3A" },
+
+  textBtn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 7, background: "#1E1A17", border: "1px solid #332C25", color: "#D9A24B", borderRadius: 12, padding: "13px", fontSize: 13, fontWeight: 600, cursor: "pointer", marginBottom: 16 },
+  textoPub: { fontFamily: "'Inter', sans-serif", fontSize: 13, color: "#F4F0E9", background: "#141110", border: "1px solid #302A24", borderRadius: 10, padding: 12, whiteSpace: "pre-wrap", lineHeight: 1.5 },
+
+  fotosGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 4 },
+  fotoThumbWrap: { position: "relative", borderRadius: 10, overflow: "hidden", aspectRatio: "1", background: "#262019" },
+  fotoThumbImg: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
+  fotoPortadaTag: { position: "absolute", left: 4, bottom: 4, fontSize: 8.5, fontWeight: 700, color: "#FFFFFF", background: "rgba(225,82,27,0.9)", borderRadius: 5, padding: "2px 5px" },
+  fotoAddBox: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, aspectRatio: "1", background: "#1E1A17", border: "1.5px dashed #3A332C", borderRadius: 10, cursor: "pointer" },
+
+  notifBannerMatch: { background: "#241E17", border: "1px solid #D9A24B", color: "#F2E4CC" },
+  warnBanner: { display: "flex", alignItems: "flex-start", gap: 8, background: "#2A2015", border: "1px solid #D9A24B", color: "#F2E4CC", borderRadius: 12, padding: "12px 13px", fontSize: 13, boxShadow: "0 8px 20px rgba(0,0,0,0.3)" },
+
+  vinculoBox: { background: "rgba(79,174,120,0.08)", border: "1px solid rgba(79,174,120,0.28)", borderRadius: 12, padding: 14, marginTop: 16 },
+  vinculoRow: { display: "flex", alignItems: "center", gap: 10, marginTop: 6 },
+  vinculoThumb: { width: 44, height: 44, borderRadius: 9, objectFit: "cover", flexShrink: 0 },
+  vinculoThumbIcon: { display: "flex", alignItems: "center", justifyContent: "center" },
+  vinculoNombre: { fontSize: 13.5, fontWeight: 700, color: "#F4F0E9" },
+  vinculoPrecio: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, color: "#B0A89B", marginTop: 1 },
+  vinculoLista: { display: "flex", flexDirection: "column", gap: 5, maxHeight: 160, overflowY: "auto" },
+  vinculoOpcion: { textAlign: "left", background: "#262019", border: "1px solid #332C25", color: "#F4F0E9", borderRadius: 9, padding: "9px 11px", fontSize: 12.5, cursor: "pointer" },
+  vinculoElegidoRow: { display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(79,174,120,0.12)", border: "1px solid rgba(79,174,120,0.35)", borderRadius: 9, padding: "8px 11px", fontSize: 12.5, color: "#DFF2E6" },
+
+  antiguedadTag: { display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#D9A24B", fontWeight: 600, width: "fit-content" },
+  antiguedadTagEstancado: { color: "#E14B3A" },
+  filterPillWarn: { borderColor: "rgba(225,75,58,0.4)" },
+
+  miniResumen: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 7, fontSize: 12.5, color: "#B0A89B", marginBottom: 18 },
+  miniResumenDot: { color: "#4A443C", margin: "0 2px" },
+
+  errorBanner: { display: "flex", alignItems: "flex-start", gap: 8, background: "#3A1F1A", border: "1px solid #E14B3A", color: "#FFE8E2", borderRadius: 12, padding: "12px 13px", fontSize: 13, boxShadow: "0 8px 20px rgba(0,0,0,0.35)" },
+  loginErrorBanner: { display: "flex", alignItems: "center", gap: 7, background: "#3A1F1A", border: "1px solid #E14B3A", color: "#FFE8E2", borderRadius: 10, padding: "9px 13px", fontSize: 12, fontWeight: 600, marginBottom: 6, maxWidth: 360, textAlign: "left" },
+  papeleraRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: "#1E1A17", border: "1px solid #302A24", borderRadius: 11, padding: "10px 12px" },
+  papeleraRestoreBtn: { background: "none", border: "none", color: "#4FAE78", cursor: "pointer", padding: 4, display: "flex", alignItems: "center" },
+
+  cambioPrecioTag: { display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#9CB6D1", fontWeight: 600, width: "fit-content" },
+  notifBannerPrecio: { background: "#1C232B", border: "1px solid #7A93B0", color: "#D9E4EF" },
+  historialPreciosLista: { display: "flex", flexDirection: "column", gap: 10, marginTop: 4 },
+  historialPrecioRow: { borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: 8 },
+  historialPrecioLinea: { fontSize: 12.5, color: "#D8D2C7", marginTop: 2 },
+
+
+  catDropdownRow: { display: "flex", justifyContent: "flex-start", marginBottom: 16 },
+  catDropdownWrap: { position: "relative" },
+  catDropdownTrigger: { display: "flex", alignItems: "center", gap: 7, background: "#1E1A17", border: "1px solid #302A24", borderRadius: 12, padding: "10px 13px", color: "#F4F0E9", fontSize: 13, fontWeight: 600, cursor: "pointer" },
+  catDropdownOverlay: { position: "fixed", inset: 0, zIndex: 8, background: "transparent" },
+  catDropdownPanel: { position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 9, background: "#1E1A17", border: "1px solid #302A24", borderRadius: 12, padding: 6, minWidth: 180, boxShadow: "0 12px 28px rgba(0,0,0,0.45)", display: "flex", flexDirection: "column", gap: 2 },
+  catDropdownOpcion: { display: "flex", alignItems: "center", gap: 9, background: "none", border: "none", color: "#D8D2C7", fontSize: 13.5, fontWeight: 600, padding: "9px 10px", borderRadius: 8, cursor: "pointer", textAlign: "left", whiteSpace: "nowrap" },
+  catDropdownOpcionActiva: { background: "rgba(225,82,27,0.14)", color: "#F17A45" },
+
+  honorBox: { background: "#1E1A17", border: "1px solid #302A24", borderRadius: 14, padding: 16, marginBottom: 20 },
+  honorHeader: { display: "flex", alignItems: "center", gap: 7, marginBottom: 12 },
+  honorTitle: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: "#E1521B", letterSpacing: 1.4, fontWeight: 700 },
+  honorRow: { display: "flex", alignItems: "center", gap: 11, padding: "7px 0" },
+  honorRank: { width: 26, height: 26, borderRadius: 8, background: "#262019", border: "1px solid #332C25", color: "#B0A89B", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Bebas Neue', sans-serif", fontSize: 14, flexShrink: 0 },
+  honorRankFirst: { background: "#E1521B", border: "1px solid #E1521B", color: "#FFFFFF" },
+  honorRankSecond: { background: "#3A3530", border: "1px solid #4A443C", color: "#F4F0E9" },
+  honorRankThird: { background: "rgba(217,161,92,0.18)", border: "1px solid rgba(217,161,92,0.4)", color: "#D9A24B" },
+  honorInfo: { flex: 1, minWidth: 0 },
+  honorNombre: { fontSize: 14, fontWeight: 700, color: "#F4F0E9" },
+  honorStats: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: "#8B8377", marginTop: 1 },
+};
