@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
+import { initializeApp } from "firebase/app";
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
 import {
   Plus, Search, Car, Home, Package, X, Check, Bell, User,
   Facebook, Instagram, MessageCircle, Store, Trash2, Pencil,
@@ -119,22 +121,43 @@ function textoPublicacion(p) {
   const lineas = [p.nombre, p.detalles, `Precio: ${money(p.precioBase)}`];
   return lineas.filter(Boolean).join("\n");
 }
-async function loadShared(key, fallback) {
+const firebaseConfig = {
+  apiKey: "AIzaSyAvAPNGOAkBhHN8mlOpapCXuu-At6R7-Es",
+  authDomain: "elite-carhouse.firebaseapp.com",
+  projectId: "elite-carhouse",
+  storageBucket: "elite-carhouse.firebasestorage.app",
+  messagingSenderId: "108968406734",
+  appId: "1:108968406734:web:69fb3a935a9f87cd13ea9f",
+};
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
+
+// Cada publicación/solicitud/admin/elemento de papelera es su propio documento
+// (no un array gigante en un solo documento) para no toparnos con el límite de 1MB por documento de Firestore.
+async function fsSet(coleccion, id, data) {
   try {
-    const res = await window.storage.get(key, true);
-    return res ? JSON.parse(res.value) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-async function saveShared(key, value) {
-  try {
-    const result = await window.storage.set(key, JSON.stringify(value), true);
-    return !!result;
+    await setDoc(doc(db, coleccion, id), data);
+    return true;
   } catch (e) {
-    console.error("storage error", e);
+    console.error("firestore set error", e);
     return false;
   }
+}
+async function fsDelete(coleccion, id) {
+  try {
+    await deleteDoc(doc(db, coleccion, id));
+    return true;
+  } catch (e) {
+    console.error("firestore delete error", e);
+    return false;
+  }
+}
+function suscribirColeccion(nombre, onData) {
+  return onSnapshot(
+    collection(db, nombre),
+    (snap) => onData(snap.docs.map((d) => d.data())),
+    (err) => console.error("firestore snapshot error", err)
+  );
 }
 const UMBRAL_PAPELERA_DIAS = 30;
 function purgarPapelera(papelera) {
@@ -201,28 +224,37 @@ export default function App() {
   };
 
   useEffect(() => {
-    let cancelled = false;
-    async function pull() {
-      const [p, a, s, papRaw] = await Promise.all([
-        loadShared("productos", DEMO_PRODUCTOS),
-        loadShared("admins", []),
-        loadShared("solicitudes", []),
-        loadShared("papelera", []),
-      ]);
-      if (!cancelled) {
-        setProductos(p);
-        setAdmins(a);
-        setSolicitudes(s);
-        const papLimpia = purgarPapelera(papRaw);
-        setPapelera(papLimpia);
-        if (papLimpia.length !== papRaw.length) saveShared("papelera", papLimpia);
-        setLoaded(true);
-      }
-    }
-    pull();
-    const poll = setInterval(pull, 3000);
+    const recibidos = { productos: false, admins: false, solicitudes: false, papelera: false };
+    const checkLoaded = () => {
+      if (Object.values(recibidos).every(Boolean)) setLoaded(true);
+    };
+
+    const unsubProductos = suscribirColeccion("productos", (arr) => {
+      setProductos(arr.length > 0 || recibidos.productos ? arr : DEMO_PRODUCTOS);
+      recibidos.productos = true;
+      checkLoaded();
+    });
+    const unsubAdmins = suscribirColeccion("admins", (arr) => {
+      setAdmins(arr);
+      recibidos.admins = true;
+      checkLoaded();
+    });
+    const unsubSolicitudes = suscribirColeccion("solicitudes", (arr) => {
+      setSolicitudes(arr);
+      recibidos.solicitudes = true;
+      checkLoaded();
+    });
+    const unsubPapelera = suscribirColeccion("papelera", (arr) => {
+      const validos = purgarPapelera(arr);
+      const validosIds = new Set(validos.map((p) => p.id));
+      arr.filter((p) => !validosIds.has(p.id)).forEach((p) => fsDelete("papelera", p.id));
+      setPapelera(validos);
+      recibidos.papelera = true;
+      checkLoaded();
+    });
+
     const clock = setInterval(() => forceTick((t) => t + 1), 1000);
-    return () => { cancelled = true; clearInterval(poll); clearInterval(clock); };
+    return () => { unsubProductos(); unsubAdmins(); unsubSolicitudes(); unsubPapelera(); clearInterval(clock); };
   }, []);
 
   useEffect(() => {
@@ -336,41 +368,63 @@ export default function App() {
     preciosPrevRef.current = actual;
   }, [productos]);
 
-  const persistProductos = async (next) => {
-    setProductos(next);
-    const ok = await saveShared("productos", next);
-    if (!ok) avisarError("No se pudo guardar el inventario. Revisa tu conexión e intenta de nuevo.");
-  };
-  const persistAdmins = async (next) => {
-    setAdmins(next);
-    const ok = await saveShared("admins", next);
-    if (!ok) avisarError("No se pudo guardar los administradores. Revisa tu conexión e intenta de nuevo.");
-  };
-  const persistSolicitudes = async (next) => {
-    setSolicitudes(next);
-    const ok = await saveShared("solicitudes", next);
-    if (!ok) avisarError("No se pudo guardar la solicitud. Revisa tu conexión e intenta de nuevo.");
-  };
-  const persistPapelera = async (next) => {
-    setPapelera(next);
-    const ok = await saveShared("papelera", next);
-    if (!ok) avisarError("No se pudo actualizar la papelera. Revisa tu conexión e intenta de nuevo.");
-  };
-
   const esAdminGlobal = sesion?.tipo === "admin";
+
+  const guardarProductoFS = async (producto) => {
+    const ok = await fsSet("productos", producto.id, producto);
+    if (!ok) avisarError("No se pudo guardar el inventario. Revisa tu conexión e intenta de nuevo.");
+    return ok;
+  };
+  const eliminarProductoFS = async (id) => {
+    const ok = await fsDelete("productos", id);
+    if (!ok) avisarError("No se pudo eliminar la publicación. Revisa tu conexión e intenta de nuevo.");
+    return ok;
+  };
+  const guardarSolicitudFS = async (solicitud) => {
+    const ok = await fsSet("solicitudes", solicitud.id, solicitud);
+    if (!ok) avisarError("No se pudo guardar la solicitud. Revisa tu conexión e intenta de nuevo.");
+    return ok;
+  };
+  const eliminarSolicitudFS = async (id) => {
+    const ok = await fsDelete("solicitudes", id);
+    if (!ok) avisarError("No se pudo eliminar la solicitud. Revisa tu conexión e intenta de nuevo.");
+    return ok;
+  };
+  const guardarPapeleraEntryFS = async (entry) => {
+    const ok = await fsSet("papelera", entry.id, entry);
+    if (!ok) avisarError("No se pudo actualizar la papelera. Revisa tu conexión e intenta de nuevo.");
+    return ok;
+  };
+  const eliminarPapeleraEntryFS = async (id) => {
+    const ok = await fsDelete("papelera", id);
+    if (!ok) avisarError("No se pudo actualizar la papelera. Revisa tu conexión e intenta de nuevo.");
+    return ok;
+  };
+  const guardarAdminFS = async (admin) => {
+    const ok = await fsSet("admins", admin.usuario, admin);
+    if (!ok) avisarError("No se pudo guardar los administradores. Revisa tu conexión e intenta de nuevo.");
+    return ok;
+  };
+  const eliminarAdminFS = async (usuario) => {
+    const ok = await fsDelete("admins", usuario);
+    if (!ok) avisarError("No se pudo guardar los administradores. Revisa tu conexión e intenta de nuevo.");
+    return ok;
+  };
 
   const cambiarEstado = async (id, estado, extra = {}) => {
     if (!esAdminGlobal) return;
-    await persistProductos(productos.map((p) => (p.id === id ? { ...p, estado, ...extra } : p)));
+    const producto = productos.find((p) => p.id === id);
+    if (!producto) return;
+    await guardarProductoFS({ ...producto, estado, ...extra });
   };
 
   const eliminar = async (id) => {
     if (!esAdminGlobal) return;
     const producto = productos.find((p) => p.id === id);
     if (producto) {
-      await persistPapelera([{ id: uid(), tipo: "producto", item: producto, eliminadoPor: sesion?.usuario || null, fechaEliminado: Date.now() }, ...papelera]);
+      await guardarPapeleraEntryFS({ id: uid(), tipo: "producto", item: producto, eliminadoPor: sesion?.usuario || null, fechaEliminado: Date.now() });
     }
-    await persistProductos(productos.filter((p) => p.id !== id));
+    await eliminarProductoFS(id);
   };
 
   const restaurarDePapelera = async (entradaId) => {
@@ -378,16 +432,16 @@ export default function App() {
     const entrada = papelera.find((p) => p.id === entradaId);
     if (!entrada) return;
     if (entrada.tipo === "producto") {
-      await persistProductos([entrada.item, ...productos]);
+      await guardarProductoFS(entrada.item);
     } else if (entrada.tipo === "solicitud") {
-      await persistSolicitudes([entrada.item, ...solicitudes]);
+      await guardarSolicitudFS(entrada.item);
     }
-    await persistPapelera(papelera.filter((p) => p.id !== entradaId));
+    await eliminarPapeleraEntryFS(entradaId);
   };
 
   const eliminarDefinitivo = async (entradaId) => {
     if (!esAdminGlobal) return;
-    await persistPapelera(papelera.filter((p) => p.id !== entradaId));
+    await eliminarPapeleraEntryFS(entradaId);
   };
 
   if (!loaded) {
@@ -403,7 +457,7 @@ export default function App() {
     return (
       <Login
         admins={admins}
-        persistAdmins={persistAdmins}
+        onGuardarAdmin={guardarAdminFS}
         onEntrar={setSesion}
         error={errorGuardado}
       />
@@ -469,15 +523,15 @@ export default function App() {
       {vista === "historial" ? (
         <Historial productos={productos} esAdmin={esAdmin} sesion={sesion} onCambiarEstado={cambiarEstado} onEliminar={eliminar} onVolver={() => setVista("inventario")} />
       ) : vista === "solicitudes" ? (
-        <Solicitudes solicitudes={solicitudes} persistSolicitudes={persistSolicitudes} productos={productos} papelera={papelera} persistPapelera={persistPapelera} esAdmin={esAdmin} sesion={sesion} onVolver={() => setVista("inventario")} />
+        <Solicitudes solicitudes={solicitudes} onGuardarSolicitud={guardarSolicitudFS} onEliminarSolicitud={eliminarSolicitudFS} onGuardarPapeleraEntry={guardarPapeleraEntryFS} productos={productos} esAdmin={esAdmin} sesion={sesion} onVolver={() => setVista("inventario")} />
       ) : (
-        <Inventario productos={productos} solicitudes={solicitudes} persistProductos={persistProductos} esAdmin={esAdmin} sesion={sesion} admins={admins} persistAdmins={persistAdmins} onCambiarEstado={cambiarEstado} onEliminar={eliminar} papelera={papelera} persistSolicitudes={persistSolicitudes} onRestaurar={restaurarDePapelera} onEliminarDefinitivo={eliminarDefinitivo} />
+        <Inventario productos={productos} solicitudes={solicitudes} onGuardarProducto={guardarProductoFS} esAdmin={esAdmin} sesion={sesion} admins={admins} onGuardarAdmin={guardarAdminFS} onEliminarAdmin={eliminarAdminFS} onCambiarEstado={cambiarEstado} onEliminar={eliminar} papelera={papelera} onRestaurar={restaurarDePapelera} onEliminarDefinitivo={eliminarDefinitivo} />
       )}
     </div>
   );
 }
 
-function Login({ admins, persistAdmins, onEntrar, error: errorGuardado }) {
+function Login({ admins, onGuardarAdmin, onEntrar, error: errorGuardado }) {
   const [vista, setVista] = useState("landing"); // 'landing' | 'adminAuth'
   const [usuarioAdmin, setUsuarioAdmin] = useState("");
   const [passAdmin, setPassAdmin] = useState("");
@@ -507,7 +561,7 @@ function Login({ admins, persistAdmins, onEntrar, error: errorGuardado }) {
     if (passAdmin.length < 4) { setError("La contraseña debe tener al menos 4 caracteres."); return; }
     if (passAdmin !== passAdmin2) { setError("Las contraseñas no coinciden."); return; }
     const nuevo = { usuario: u, password: passAdmin };
-    await persistAdmins([nuevo]);
+    await onGuardarAdmin(nuevo);
     onEntrar({ tipo: "admin", usuario: u });
   };
 
@@ -593,7 +647,7 @@ function TopBar({ sesion, onCambiar, onHistorial, onSolicitudes, vistaActiva, hi
 
 /* ---------------- Inventario ---------------- */
 
-function Inventario({ productos, solicitudes, persistProductos, esAdmin, sesion, admins, persistAdmins, onCambiarEstado, onEliminar, papelera, persistSolicitudes, onRestaurar, onEliminarDefinitivo }) {
+function Inventario({ productos, solicitudes, onGuardarProducto, esAdmin, sesion, admins, onGuardarAdmin, onEliminarAdmin, onCambiarEstado, onEliminar, papelera, onRestaurar, onEliminarDefinitivo }) {
   const [filtro, setFiltro] = useState("disponible");
   const [filtroCategoria, setFiltroCategoria] = useState("todas");
   const [categoriaAbierta, setCategoriaAbierta] = useState(false);
@@ -644,10 +698,10 @@ function Inventario({ productos, solicitudes, persistProductos, esAdmin, sesion,
           ...historialPrecios,
         ];
       }
-      await persistProductos(productos.map((p) => (p.id === editing.id ? { ...p, ...producto, historialPrecios } : p)));
+      await onGuardarProducto({ ...editing, ...producto, historialPrecios });
     } else {
       const nuevo = { id: uid(), estado: "disponible", fechaPublicado: Date.now(), fechaVendido: null, vendidoPor: null, notas: "", historialPrecios: [], creadoPor: sesion.usuario, ...producto };
-      await persistProductos([nuevo, ...productos]);
+      await onGuardarProducto(nuevo);
     }
     setShowForm(false);
     setEditing(null);
@@ -688,7 +742,7 @@ function Inventario({ productos, solicitudes, persistProductos, esAdmin, sesion,
   };
 
   if (showConfig) {
-    return <AdminPanel admins={admins} persistAdmins={persistAdmins} sesion={sesion} onClose={() => setShowConfig(false)} papelera={papelera} onRestaurar={onRestaurar} onEliminarDefinitivo={onEliminarDefinitivo} />;
+    return <AdminPanel admins={admins} onGuardarAdmin={onGuardarAdmin} onEliminarAdmin={onEliminarAdmin} sesion={sesion} onClose={() => setShowConfig(false)} papelera={papelera} onRestaurar={onRestaurar} onEliminarDefinitivo={onEliminarDefinitivo} />;
   }
 
   if (showForm && esAdmin) {
@@ -1125,7 +1179,7 @@ function ProductoDetalle({ producto, esAdmin, sesion, onBack, onEditar, onCambia
   );
 }
 
-function AdminPanel({ admins, persistAdmins, sesion, onClose, papelera, onRestaurar, onEliminarDefinitivo }) {
+function AdminPanel({ admins, onGuardarAdmin, onEliminarAdmin, sesion, onClose, papelera, onRestaurar, onEliminarDefinitivo }) {
   const [actual, setActual] = useState("");
   const [nueva, setNueva] = useState("");
   const [nueva2, setNueva2] = useState("");
@@ -1145,7 +1199,7 @@ function AdminPanel({ admins, persistAdmins, sesion, onClose, papelera, onRestau
     if (!yo || actual !== yo.password) { setError("La contraseña actual no coincide."); return; }
     if (nueva.length < 4) { setError("La nueva contraseña debe tener al menos 4 caracteres."); return; }
     if (nueva !== nueva2) { setError("Las contraseñas nuevas no coinciden."); return; }
-    await persistAdmins(admins.map((a) => (a.usuario === sesion.usuario ? { ...a, password: nueva } : a)));
+    await onGuardarAdmin({ ...yo, password: nueva });
     setGuardado(true);
     setActual(""); setNueva(""); setNueva2("");
     setTimeout(() => setGuardado(false), 2000);
@@ -1158,7 +1212,7 @@ function AdminPanel({ admins, persistAdmins, sesion, onClose, papelera, onRestau
     if (admins.some((a) => a.usuario.toLowerCase() === u.toLowerCase())) { setErrorNuevo("Ese usuario ya existe."); return; }
     if (nuevoPass.length < 4) { setErrorNuevo("La contraseña debe tener al menos 4 caracteres."); return; }
     if (nuevoPass !== nuevoPass2) { setErrorNuevo("Las contraseñas no coinciden."); return; }
-    await persistAdmins([...admins, { usuario: u, password: nuevoPass }]);
+    await onGuardarAdmin({ usuario: u, password: nuevoPass });
     setNuevoUsuario(""); setNuevoPass(""); setNuevoPass2("");
     setCreado(true);
     setTimeout(() => setCreado(false), 2000);
@@ -1167,7 +1221,7 @@ function AdminPanel({ admins, persistAdmins, sesion, onClose, papelera, onRestau
   const eliminarAdmin = async (usuario) => {
     if (usuario === sesion.usuario) return;
     if (admins.length <= 1) return;
-    await persistAdmins(admins.filter((a) => a.usuario !== usuario));
+    await onEliminarAdmin(usuario);
   };
 
   return (
@@ -1534,7 +1588,7 @@ function rangoPresupuesto(s) {
   return "Presupuesto abierto";
 }
 
-function Solicitudes({ solicitudes, persistSolicitudes, productos, papelera, persistPapelera, esAdmin, sesion, onVolver }) {
+function Solicitudes({ solicitudes, onGuardarSolicitud, onEliminarSolicitud, onGuardarPapeleraEntry, productos, esAdmin, sesion, onVolver }) {
   const [filtro, setFiltro] = useState("buscando");
   const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
@@ -1555,10 +1609,10 @@ function Solicitudes({ solicitudes, persistSolicitudes, productos, papelera, per
   const guardarSolicitud = async (datos) => {
     if (!esAdmin) return;
     if (editing) {
-      await persistSolicitudes(solicitudes.map((s) => (s.id === editing.id ? { ...s, ...datos } : s)));
+      await onGuardarSolicitud({ ...editing, ...datos });
     } else {
       const nueva = { id: uid(), estado: "buscando", fechaCreada: Date.now(), fechaConseguido: null, resultado: "", creadoPor: sesion.usuario, ...datos };
-      await persistSolicitudes([nueva, ...solicitudes]);
+      await onGuardarSolicitud(nueva);
     }
     setShowForm(false);
     setEditing(null);
@@ -1566,7 +1620,9 @@ function Solicitudes({ solicitudes, persistSolicitudes, productos, papelera, per
 
   const cambiarEstado = async (id, estado, extra = {}) => {
     if (!esAdmin) return;
-    await persistSolicitudes(solicitudes.map((s) => (s.id === id ? { ...s, estado, ...extra } : s)));
+    const solicitud = solicitudes.find((s) => s.id === id);
+    if (!solicitud) return;
+    await onGuardarSolicitud({ ...solicitud, estado, ...extra });
     setDetalle((d) => (d && d.id === id ? { ...d, estado, ...extra } : d));
   };
 
@@ -1574,9 +1630,9 @@ function Solicitudes({ solicitudes, persistSolicitudes, productos, papelera, per
     if (!esAdmin) return;
     const solicitud = solicitudes.find((s) => s.id === id);
     if (solicitud) {
-      await persistPapelera([{ id: uid(), tipo: "solicitud", item: solicitud, eliminadoPor: sesion?.usuario || null, fechaEliminado: Date.now() }, ...(papelera || [])]);
+      await onGuardarPapeleraEntry({ id: uid(), tipo: "solicitud", item: solicitud, eliminadoPor: sesion?.usuario || null, fechaEliminado: Date.now() });
     }
-    await persistSolicitudes(solicitudes.filter((s) => s.id !== id));
+    await onEliminarSolicitud(id);
     setDetalle(null);
   };
 
