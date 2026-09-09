@@ -1989,7 +1989,7 @@ const styles = {
   loadingStamp: { fontFamily: "'IBM Plex Mono', monospace", color: "#9A8F8A", letterSpacing: 3, fontSize: 11 },
 
   loginScreen: { position: "relative", minHeight: "100vh", background: "radial-gradient(ellipse at 50% 20%, #2E2626 0%, #181615 60%, #0F0E0E 100%)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, gap: 26 },
-  cornerAdminBtn: { position: "absolute", top: 18, right: 18, display: "flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.14)", color: "#C9C2B4", borderRadius: 20, padding: "8px 13px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" },
+  cornerAdminBtn: { position: "absolute", top: "calc(18px + env(safe-area-inset-top, 0px))", right: 18, display: "flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.14)", color: "#C9C2B4", borderRadius: 20, padding: "8px 13px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" },
   loginLogo: { width: 148, height: "auto", filter: "drop-shadow(0 6px 24px rgba(225,82,27,0.22))" },
   loginCard: { background: "#1E1A17", border: "1px solid #332C25", borderRadius: 20, padding: "32px 28px", width: "100%", maxWidth: 380, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, boxSizing: "border-box", boxShadow: "0 24px 60px rgba(0,0,0,0.5)" },
   landingCard: { background: "#1E1A17", border: "1px solid #332C25", borderRadius: 20, padding: "34px 28px", width: "100%", maxWidth: 380, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", gap: 4, boxSizing: "border-box", boxShadow: "0 24px 60px rgba(0,0,0,0.5)" },
@@ -2007,7 +2007,7 @@ const styles = {
   loginEnterBtn: { background: "#E1521B", color: "#FFFFFF", border: "none", borderRadius: 0, clipPath: "polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%)", padding: "0 20px", fontWeight: 700, fontSize: 13, cursor: "pointer", boxShadow: "0 6px 16px rgba(225,82,27,0.32)" },
   readonlyChip: { display: "flex", alignItems: "center", gap: 6, background: "#262019", borderRadius: 10, padding: "10px 12px", fontSize: 13, fontWeight: 600, color: "#B0A89B", marginBottom: 4 },
 
-  topBar: { display: "flex", padding: "13px 18px", background: "linear-gradient(115deg, #1B1817 0%, #1B1817 55%, #241D18 100%)", flexShrink: 0, boxShadow: "0 2px 12px rgba(0,0,0,0.35)", position: "relative", zIndex: 5, borderBottom: "1px solid rgba(225,82,27,0.25)" },
+  topBar: { display: "flex", padding: "13px 18px", paddingTop: "calc(13px + env(safe-area-inset-top, 0px))", background: "linear-gradient(115deg, #1B1817 0%, #1B1817 55%, #241D18 100%)", flexShrink: 0, boxShadow: "0 2px 12px rgba(0,0,0,0.35)", position: "relative", zIndex: 5, borderBottom: "1px solid rgba(225,82,27,0.25)" },
   topBarInner: { display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" },
   brand: { display: "flex", alignItems: "center" },
   topBarLogo: { height: 30, width: "auto" },
