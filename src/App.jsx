@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
 import { initializeApp, deleteApp } from "firebase/app";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
-import { getMessaging, getToken, isSupported as messagingEsCompatible } from "firebase/messaging";
 import {
   getAuth,
   signInWithEmailAndPassword,
@@ -290,40 +289,31 @@ async function cambiarPasswordPropiaAuth(passwordActual, passwordNueva) {
   }
 }
 
-// Pega aquí tu "Clave del par de claves" de Firebase Console > Configuración del proyecto
-// > Cloud Messaging > Certificados push web. Sin esto, activarNotificacionesPush() fallará.
-const FCM_VAPID_KEY = "PEGA_AQUI_TU_VAPID_KEY";
-
-// Pide permiso de notificaciones al usuario, registra el service worker y guarda
-// el token del dispositivo en Firestore para que la Cloud Function le pueda mandar avisos
-// aunque tenga la app cerrada.
-async function activarNotificacionesPush() {
+// Pide permiso de notificaciones al navegador. Estas son "notificaciones locales":
+// avisan mientras la app está abierta (aunque esté minimizada o en otra pestaña),
+// pero no llegan si el navegador está completamente cerrado — para eso se necesitaría
+// un servidor que mande el push (Cloud Functions), que decidimos no usar por ahora.
+async function activarNotificacionesLocales() {
   try {
-    if (!("Notification" in window) || !("serviceWorker" in navigator)) {
-      return { ok: false, error: "Este navegador no soporta notificaciones push." };
-    }
-    const compatible = await messagingEsCompatible();
-    if (!compatible) {
-      return { ok: false, error: "Este navegador no soporta notificaciones push." };
+    if (!("Notification" in window)) {
+      return { ok: false, error: "Este navegador no soporta notificaciones." };
     }
     const permiso = await Notification.requestPermission();
     if (permiso !== "granted") {
       return { ok: false, error: "Permiso de notificaciones denegado." };
     }
-    const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
-    const messaging = getMessaging(firebaseApp);
-    const token = await getToken(messaging, {
-      vapidKey: FCM_VAPID_KEY,
-      serviceWorkerRegistration: registration,
-    });
-    if (!token) {
-      return { ok: false, error: "No se pudo generar el token de notificaciones." };
-    }
-    await fsSet("device_tokens", token, { token, creadoEn: Date.now(), userAgent: navigator.userAgent });
     return { ok: true };
   } catch (e) {
-    console.error("Error activando notificaciones push:", e);
+    console.error("Error activando notificaciones:", e);
     return { ok: false, error: "No se pudo activar: " + (e?.message || "error desconocido") };
+  }
+}
+function notificarLocal(mensaje) {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  try {
+    new Notification("Elite Carhouse", { body: mensaje });
+  } catch (e) {
+    console.error("No se pudo mostrar la notificación:", e);
   }
 }
 
@@ -421,7 +411,7 @@ export default function App() {
   const [ultimaVistaHistorial, setUltimaVistaHistorial] = useState(() => leerUltimaVista(ULTIMA_VISTA_HISTORIAL_KEY));
   const [ultimaVistaSolicitudes, setUltimaVistaSolicitudes] = useState(() => leerUltimaVista(ULTIMA_VISTA_SOLICITUDES_KEY));
   const [errorGuardado, setErrorGuardado] = useState(null);
-  const [notifPushEstado, setNotifPushEstado] = useState("inactivo"); // 'inactivo' | 'activando' | 'activo' | 'error'
+  const [notifPushEstado, setNotifPushEstado] = useState(() => (typeof Notification !== "undefined" && Notification.permission === "granted") ? "activo" : "inactivo"); // 'inactivo' | 'activando' | 'activo' | 'error'
   const vendidoIdsPrevRef = useRef(null);
   const conseguidoIdsPrevRef = useRef(null);
   const productoIdsPrevRef = useRef(null);
@@ -435,7 +425,7 @@ export default function App() {
 
   const handleActivarPush = async () => {
     setNotifPushEstado("activando");
-    const resultado = await activarNotificacionesPush();
+    const resultado = await activarNotificacionesLocales();
     if (resultado.ok) {
       setNotifPushEstado("activo");
     } else {
@@ -525,6 +515,7 @@ export default function App() {
       setNotificaciones((prev) => [...items, ...prev]);
       items.forEach((it) => {
         fsSet("avisos", it.id, { id: it.id, tipo: it.tipo, mensaje: it.mensaje, fecha: Date.now() });
+        notificarLocal(it.mensaje);
         setTimeout(() => setNotificaciones((prev) => prev.filter((n) => n.id !== it.id)), 20000);
       });
     }
@@ -550,6 +541,7 @@ export default function App() {
       setNotificaciones((prev) => [...items, ...prev]);
       items.forEach((it) => {
         fsSet("avisos", it.id, { id: it.id, tipo: it.tipo, mensaje: it.mensaje, fecha: Date.now() });
+        notificarLocal(it.mensaje);
         setTimeout(() => setNotificaciones((prev) => prev.filter((n) => n.id !== it.id)), 20000);
       });
     }
@@ -587,6 +579,7 @@ export default function App() {
         setNotificaciones((prev) => [...items, ...prev]);
         items.forEach((it) => {
           fsSet("avisos", it.id, { id: it.id, tipo: it.tipo, mensaje: it.mensaje, fecha: Date.now() });
+        notificarLocal(it.mensaje);
           setTimeout(() => setNotificaciones((prev) => prev.filter((n) => n.id !== it.id)), 30000);
         });
       }
@@ -629,6 +622,7 @@ export default function App() {
       setNotificaciones((prev) => [...items, ...prev]);
       items.forEach((it) => {
         fsSet("avisos", it.id, { id: it.id, tipo: it.tipo, mensaje: it.mensaje, fecha: Date.now() });
+        notificarLocal(it.mensaje);
         setTimeout(() => setNotificaciones((prev) => prev.filter((n) => n.id !== it.id)), 20000);
       });
     }
@@ -976,7 +970,7 @@ function TopBar({ sesion, onCambiar, onHistorial, onSolicitudes, vistaActiva, hi
               style={styles.historialBtn}
               onClick={onActivarPush}
               disabled={notifPushEstado === "activando"}
-              title="Activar notificaciones aunque la app esté cerrada"
+              title="Activar notificaciones mientras la app esté abierta o minimizada"
             >
               <Bell size={15} />
             </button>
