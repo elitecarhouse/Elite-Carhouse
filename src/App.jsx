@@ -4,6 +4,8 @@ import { initializeApp, deleteApp } from "firebase/app";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
 import {
   getAuth,
+  initializeAuth,
+  inMemoryPersistence,
   signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
@@ -241,8 +243,17 @@ const ADMIN_EMAIL_DOMAIN = "elitecarhouse.local";
 function usuarioAEmail(usuario) {
   return `${usuario.trim().toLowerCase()}@${ADMIN_EMAIL_DOMAIN}`;
 }
+// Evita que un botón se quede "cargando" para siempre si algo se traba
+// (mala señal, un problema de Firebase, etc.) — a los 15s muestra un error.
+function conTimeout(promesa, ms = 15000) {
+  return Promise.race([
+    promesa,
+    new Promise((_, reject) => setTimeout(() => reject({ code: "timeout" }), ms)),
+  ]);
+}
 function mensajeErrorAuth(codigo) {
   const mapa = {
+    "timeout": "Esto está tardando demasiado. Revisa tu conexión e intenta de nuevo.",
     "auth/invalid-credential": "Usuario o contraseña incorrectos.",
     "auth/invalid-email": "Usuario o contraseña incorrectos.",
     "auth/wrong-password": "Contraseña incorrecta.",
@@ -255,23 +266,24 @@ function mensajeErrorAuth(codigo) {
   return mapa[codigo] || "Ocurrió un error. Intenta de nuevo.";
 }
 // Crea la cuenta en Firebase Auth usando una app secundaria, para no cerrar
-// la sesión del admin que está creando la cuenta nueva.
+// la sesión del admin que está creando la cuenta nueva. Usa persistencia en
+// memoria (no IndexedDB) para evitar que choque con la sesión principal en
+// algunos navegadores — solo la necesitamos un instante, no hace falta guardarla.
 async function crearAdminAuth(usuario, password) {
   const appSecundaria = initializeApp(firebaseConfig, `crear-admin-${Date.now()}`);
-  const authSecundaria = getAuth(appSecundaria);
+  const authSecundaria = initializeAuth(appSecundaria, { persistence: inMemoryPersistence });
   try {
-    await createUserWithEmailAndPassword(authSecundaria, usuarioAEmail(usuario), password);
-    await signOut(authSecundaria);
+    await conTimeout(createUserWithEmailAndPassword(authSecundaria, usuarioAEmail(usuario), password));
     return { ok: true };
   } catch (e) {
     return { ok: false, error: mensajeErrorAuth(e.code) };
   } finally {
-    await deleteApp(appSecundaria).catch(() => {});
+    deleteApp(appSecundaria).catch(() => {});
   }
 }
 async function iniciarSesionAdminAuth(usuario, password) {
   try {
-    await signInWithEmailAndPassword(auth, usuarioAEmail(usuario), password);
+    await conTimeout(signInWithEmailAndPassword(auth, usuarioAEmail(usuario), password));
     return { ok: true };
   } catch (e) {
     return { ok: false, error: mensajeErrorAuth(e.code) };
@@ -669,10 +681,14 @@ export default function App() {
     return { ok: true };
   };
   const crearPrimerAdminYEntrar = async (usuario, password) => {
-    const creado = await crearAdminAuth(usuario, password);
+    let creado;
+    try {
+      await conTimeout(createUserWithEmailAndPassword(auth, usuarioAEmail(usuario), password));
+      creado = { ok: true };
+    } catch (e) {
+      creado = { ok: false, error: mensajeErrorAuth(e.code) };
+    }
     if (!creado.ok) return creado;
-    const entrado = await iniciarSesionAdminAuth(usuario, password);
-    if (!entrado.ok) return entrado;
     const guardadoLista = await fsSet("admins", usuario.trim(), { usuario: usuario.trim() });
     if (!guardadoLista) return { ok: false, error: "Se creó la cuenta pero no se pudo guardar en la lista de administradores. Revisa tu conexión." };
     setSesion({ tipo: "admin", usuario: usuario.trim() });
