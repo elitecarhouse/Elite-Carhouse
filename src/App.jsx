@@ -1,7 +1,18 @@
 import React, { useState, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
-import { initializeApp } from "firebase/app";
+import { initializeApp, deleteApp } from "firebase/app";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
+import { getMessaging, getToken, isSupported as messagingEsCompatible } from "firebase/messaging";
+import {
+  getAuth,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  createUserWithEmailAndPassword,
+  updatePassword,
+  reauthenticateWithCredential,
+  EmailAuthProvider,
+} from "firebase/auth";
 import {
   Plus, Search, Car, Home, Package, X, Check, Bell, User,
   Facebook, Instagram, MessageCircle, Store, Trash2, Pencil,
@@ -117,9 +128,101 @@ function seguimientoInfo(s) {
   if (dias < UMBRAL_SOLICITUD_ATENCION) return null;
   return { dias, estancada: dias >= UMBRAL_SOLICITUD_ESTANCADA };
 }
+function construirDetallesVehiculo(d, categoria) {
+  const lineas = [];
+  lineas.push(Number(d.duenos) > 1 ? `${d.duenos} dueños` : "Único dueño");
+  if (d.kilometraje !== "" && d.kilometraje != null) lineas.push(`${Number(d.kilometraje).toLocaleString("es-CO")} km`);
+  if (categoria === "vehiculo" && d.traccion) lineas.push(d.traccion);
+  if (categoria === "vehiculo") lineas.push(d.mantenimientosAlDia ? "Todos los mantenimientos al día" : "Mantenimientos pendientes por revisar");
+  if (categoria === "vehiculo" && d.clutchNuevo) lineas.push("Clutch nuevo");
+  if (d.soatHasta) lineas.push(`SOAT vigente hasta ${dateLabel(d.soatHasta)}`);
+  if (d.tecnomecanicaEstado === "vigente" && d.tecnomecanicaHasta) lineas.push(`Tecnomecánica vigente hasta ${dateLabel(d.tecnomecanicaHasta)}`);
+  else if (d.tecnomecanicaEstado === "no_aplica") lineas.push("Tecnomecánica aún no aplica");
+  else if (d.tecnomecanicaEstado === "vencida") lineas.push("Tecnomecánica vencida");
+  if (d.transitoCiudad) lineas.push(`Tránsito de ${d.transitoCiudad}`);
+  lineas.push(d.prenda ? `Prenda vigente${d.prendaEntidad ? ` con ${d.prendaEntidad}` : ""}` : "Sin prenda");
+  if (d.estadoGeneral && d.estadoGeneral.trim()) lineas.push(d.estadoGeneral.trim());
+  return lineas.map((l) => `• ${l}`).join("\n");
+}
 function textoPublicacion(p) {
-  const lineas = [p.nombre, p.detalles, `Precio: ${money(p.precioBase)}`];
+  if ((p.categoria === "vehiculo" || p.categoria === "moto") && p.anioModelo) {
+    const lineas = [
+      `${p.nombre} – MODELO ${p.anioModelo}`,
+      "",
+      `Precio $ ${money(p.precioBase)}`,
+      "",
+      p.detalles,
+      "",
+      "📲 Escríbeme para más información o para agendar visita.",
+    ];
+    return lineas.filter((l) => l !== null && l !== undefined).join("\n");
+  }
+  const catInfo = CATEGORIAS.find((c) => c.id === p.categoria);
+  const lineas = [
+    catInfo ? `${catInfo.label.replace(/s$/, "")}: ${p.nombre}` : p.nombre,
+    p.detalles,
+    `Precio: ${money(p.precioBase)}`,
+  ];
   return lineas.filter(Boolean).join("\n");
+}
+function dataURLaArchivo(dataUrl, nombreArchivo) {
+  const [encabezado, base64] = dataUrl.split(",");
+  const mimeMatch = encabezado.match(/:(.*?);/);
+  const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
+  const binario = atob(base64);
+  const bytes = new Uint8Array(binario.length);
+  for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
+  return new File([bytes], nombreArchivo, { type: mime });
+}
+function fotosDeProducto(p) {
+  if (p.fotos && p.fotos.length > 0) return p.fotos;
+  if (p.foto) return [p.foto];
+  return [];
+}
+function textoFichaInterna(p) {
+  const titulo = (p.categoria === "vehiculo" || p.categoria === "moto") && p.anioModelo ? `${p.nombre} – MODELO ${p.anioModelo}` : p.nombre;
+  const lineas = [
+    `[USO INTERNO — no enviar al cliente]`,
+    titulo,
+    "",
+    `Precio base $ ${money(p.precioBase)}`,
+    p.precioMinimo != null ? `Precio mínimo $ ${money(p.precioMinimo)}` : null,
+    "",
+    p.detalles,
+    p.notas && p.notas.trim() ? `\nNotas internas: ${p.notas.trim()}` : null,
+  ];
+  return lineas.filter((l) => l !== null && l !== undefined).join("\n");
+}
+// Comparte el texto + las fotos juntos usando el panel nativo de compartir del
+// celular (funciona en Chrome/Android y Safari/iOS). El usuario elige WhatsApp
+// ahí mismo y le llegan las fotos como imágenes reales, no como enlace.
+async function compartirProductoConFotos(producto, texto) {
+  const textoAUsar = texto ?? textoPublicacion(producto);
+  const fotos = fotosDeProducto(producto);
+  if (fotos.length > 0 && navigator.share && navigator.canShare) {
+    try {
+      const archivos = fotos.map((f, i) => dataURLaArchivo(f, `foto-${i + 1}.jpg`));
+      if (navigator.canShare({ files: archivos })) {
+        await navigator.share({ files: archivos, text: textoAUsar, title: producto.nombre });
+        return { ok: true };
+      }
+    } catch (e) {
+      if (e?.name === "AbortError") return { ok: true }; // el usuario cerró el panel, no es un error
+      console.error("No se pudo compartir con fotos:", e);
+    }
+  }
+  return { ok: false, texto: textoAUsar };
+}
+function descargarFotosProducto(producto) {
+  const fotos = fotosDeProducto(producto);
+  fotos.forEach((f, i) => {
+    const a = document.createElement("a");
+    a.href = f;
+    a.download = `${(producto.nombre || "foto").replace(/\s+/g, "_")}-${i + 1}.jpg`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  });
 }
 const firebaseConfig = {
   apiKey: "AIzaSyAvAPNGOAkBhHN8mlOpapCXuu-At6R7-Es",
@@ -131,6 +234,98 @@ const firebaseConfig = {
 };
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
+const auth = getAuth(firebaseApp);
+
+// Firebase Authentication pide un correo, pero en la app los admins usan un
+// "usuario" simple — lo convertimos a un correo interno que nunca se muestra.
+const ADMIN_EMAIL_DOMAIN = "elitecarhouse.local";
+function usuarioAEmail(usuario) {
+  return `${usuario.trim().toLowerCase()}@${ADMIN_EMAIL_DOMAIN}`;
+}
+function mensajeErrorAuth(codigo) {
+  const mapa = {
+    "auth/invalid-credential": "Usuario o contraseña incorrectos.",
+    "auth/invalid-email": "Usuario o contraseña incorrectos.",
+    "auth/wrong-password": "Contraseña incorrecta.",
+    "auth/user-not-found": "Ese usuario no existe. Pídele a un administrador que te cree una cuenta.",
+    "auth/too-many-requests": "Demasiados intentos. Espera un momento e intenta de nuevo.",
+    "auth/email-already-in-use": "Ese usuario ya existe.",
+    "auth/weak-password": "La contraseña debe tener al menos 6 caracteres.",
+    "auth/network-request-failed": "Sin conexión. Revisa tu internet e intenta de nuevo.",
+  };
+  return mapa[codigo] || "Ocurrió un error. Intenta de nuevo.";
+}
+// Crea la cuenta en Firebase Auth usando una app secundaria, para no cerrar
+// la sesión del admin que está creando la cuenta nueva.
+async function crearAdminAuth(usuario, password) {
+  const appSecundaria = initializeApp(firebaseConfig, `crear-admin-${Date.now()}`);
+  const authSecundaria = getAuth(appSecundaria);
+  try {
+    await createUserWithEmailAndPassword(authSecundaria, usuarioAEmail(usuario), password);
+    await signOut(authSecundaria);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: mensajeErrorAuth(e.code) };
+  } finally {
+    await deleteApp(appSecundaria).catch(() => {});
+  }
+}
+async function iniciarSesionAdminAuth(usuario, password) {
+  try {
+    await signInWithEmailAndPassword(auth, usuarioAEmail(usuario), password);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: mensajeErrorAuth(e.code) };
+  }
+}
+async function cambiarPasswordPropiaAuth(passwordActual, passwordNueva) {
+  try {
+    const cred = EmailAuthProvider.credential(auth.currentUser.email, passwordActual);
+    await reauthenticateWithCredential(auth.currentUser, cred);
+    await updatePassword(auth.currentUser, passwordNueva);
+    return { ok: true };
+  } catch (e) {
+    if (e.code === "auth/wrong-password" || e.code === "auth/invalid-credential") return { ok: false, error: "La contraseña actual no coincide." };
+    return { ok: false, error: mensajeErrorAuth(e.code) };
+  }
+}
+
+// Pega aquí tu "Clave del par de claves" de Firebase Console > Configuración del proyecto
+// > Cloud Messaging > Certificados push web. Sin esto, activarNotificacionesPush() fallará.
+const FCM_VAPID_KEY = "PEGA_AQUI_TU_VAPID_KEY";
+
+// Pide permiso de notificaciones al usuario, registra el service worker y guarda
+// el token del dispositivo en Firestore para que la Cloud Function le pueda mandar avisos
+// aunque tenga la app cerrada.
+async function activarNotificacionesPush() {
+  try {
+    if (!("Notification" in window) || !("serviceWorker" in navigator)) {
+      return { ok: false, error: "Este navegador no soporta notificaciones push." };
+    }
+    const compatible = await messagingEsCompatible();
+    if (!compatible) {
+      return { ok: false, error: "Este navegador no soporta notificaciones push." };
+    }
+    const permiso = await Notification.requestPermission();
+    if (permiso !== "granted") {
+      return { ok: false, error: "Permiso de notificaciones denegado." };
+    }
+    const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+    const messaging = getMessaging(firebaseApp);
+    const token = await getToken(messaging, {
+      vapidKey: FCM_VAPID_KEY,
+      serviceWorkerRegistration: registration,
+    });
+    if (!token) {
+      return { ok: false, error: "No se pudo generar el token de notificaciones." };
+    }
+    await fsSet("device_tokens", token, { token, creadoEn: Date.now(), userAgent: navigator.userAgent });
+    return { ok: true };
+  } catch (e) {
+    console.error("Error activando notificaciones push:", e);
+    return { ok: false, error: "No se pudo activar: " + (e?.message || "error desconocido") };
+  }
+}
 
 // Cada publicación/solicitud/admin/elemento de papelera es su propio documento
 // (no un array gigante en un solo documento) para no toparnos con el límite de 1MB por documento de Firestore.
@@ -163,6 +358,18 @@ const UMBRAL_PAPELERA_DIAS = 30;
 function purgarPapelera(papelera) {
   const limite = Date.now() - UMBRAL_PAPELERA_DIAS * 86400000;
   return papelera.filter((p) => p.fechaEliminado > limite);
+}
+const UMBRAL_AVISOS_DIAS = 3;
+const ULTIMA_VISTA_AVISOS_KEY = "elite-carhouse:ultimaVistaAvisos";
+const ULTIMA_VISTA_HISTORIAL_KEY = "elite-carhouse:ultimaVistaHistorial";
+const ULTIMA_VISTA_SOLICITUDES_KEY = "elite-carhouse:ultimaVistaSolicitudes";
+function leerUltimaVista(key) {
+  const guardado = Number(localStorage.getItem(key) || 0);
+  return guardado > 0 ? guardado : Date.now();
+}
+function purgarAvisos(avisos) {
+  const limite = Date.now() - UMBRAL_AVISOS_DIAS * 86400000;
+  return avisos.filter((a) => a.fecha > limite);
 }
 
 // Redimensiona y comprime una imagen para que quepa cómodamente en el storage
@@ -202,6 +409,7 @@ const DEMO_PRODUCTOS = [
 export default function App() {
   const [sesion, setSesion] = useState(null); // { tipo: 'vendedor' } | { tipo: 'admin', usuario }
   const [admins, setAdmins] = useState([]); // [{ usuario, password }]
+  const [comisionistas, setComisionistas] = useState([]); // [{ nombre }]
   const [productos, setProductos] = useState(DEMO_PRODUCTOS);
   const [solicitudes, setSolicitudes] = useState([]);
   const [papelera, setPapelera] = useState([]); // [{ id, tipo, item, eliminadoPor, fechaEliminado }]
@@ -210,21 +418,34 @@ export default function App() {
   const [, forceTick] = useState(0);
   const [notificaciones, setNotificaciones] = useState([]);
   const [reservasIgnoradas, setReservasIgnoradas] = useState([]);
-  const [ultimaVistaHistorial, setUltimaVistaHistorial] = useState(Date.now());
-  const [ultimaVistaSolicitudes, setUltimaVistaSolicitudes] = useState(Date.now());
+  const [ultimaVistaHistorial, setUltimaVistaHistorial] = useState(() => leerUltimaVista(ULTIMA_VISTA_HISTORIAL_KEY));
+  const [ultimaVistaSolicitudes, setUltimaVistaSolicitudes] = useState(() => leerUltimaVista(ULTIMA_VISTA_SOLICITUDES_KEY));
   const [errorGuardado, setErrorGuardado] = useState(null);
+  const [notifPushEstado, setNotifPushEstado] = useState("inactivo"); // 'inactivo' | 'activando' | 'activo' | 'error'
   const vendidoIdsPrevRef = useRef(null);
   const conseguidoIdsPrevRef = useRef(null);
   const productoIdsPrevRef = useRef(null);
   const preciosPrevRef = useRef(null);
+  const avisosInicialesRef = useRef(false);
 
   const avisarError = (msg) => {
     setErrorGuardado(msg);
     setTimeout(() => setErrorGuardado((cur) => (cur === msg ? null : cur)), 6000);
   };
 
+  const handleActivarPush = async () => {
+    setNotifPushEstado("activando");
+    const resultado = await activarNotificacionesPush();
+    if (resultado.ok) {
+      setNotifPushEstado("activo");
+    } else {
+      setNotifPushEstado("error");
+      avisarError(resultado.error);
+    }
+  };
+
   useEffect(() => {
-    const recibidos = { productos: false, admins: false, solicitudes: false, papelera: false };
+    const recibidos = { productos: false, admins: false, comisionistas: false, solicitudes: false, papelera: false, avisos: false };
     const checkLoaded = () => {
       if (Object.values(recibidos).every(Boolean)) setLoaded(true);
     };
@@ -237,6 +458,11 @@ export default function App() {
     const unsubAdmins = suscribirColeccion("admins", (arr) => {
       setAdmins(arr);
       recibidos.admins = true;
+      checkLoaded();
+    });
+    const unsubComisionistas = suscribirColeccion("comisionistas", (arr) => {
+      setComisionistas(arr.sort((a, b) => a.nombre.localeCompare(b.nombre)));
+      recibidos.comisionistas = true;
       checkLoaded();
     });
     const unsubSolicitudes = suscribirColeccion("solicitudes", (arr) => {
@@ -252,9 +478,29 @@ export default function App() {
       recibidos.papelera = true;
       checkLoaded();
     });
+    const unsubAvisos = suscribirColeccion("avisos", (arr) => {
+      const validos = purgarAvisos(arr);
+      const validosIds = new Set(validos.map((a) => a.id));
+      arr.filter((a) => !validosIds.has(a.id)).forEach((a) => fsDelete("avisos", a.id));
+
+      // Solo la primera vez: muestra lo que pasó mientras este dispositivo no estaba abierto
+      if (!avisosInicialesRef.current) {
+        avisosInicialesRef.current = true;
+        const ultimaVista = Number(localStorage.getItem(ULTIMA_VISTA_AVISOS_KEY) || 0);
+        const noVistos = validos.filter((a) => a.fecha > ultimaVista).sort((a, b) => a.fecha - b.fecha);
+        if (noVistos.length > 0) {
+          const items = noVistos.map((a) => ({ id: a.id, tipo: a.tipo, texto: a.mensaje }));
+          setNotificaciones((prev) => [...items, ...prev]);
+          items.forEach((it) => setTimeout(() => setNotificaciones((prev) => prev.filter((n) => n.id !== it.id)), 20000));
+        }
+        localStorage.setItem(ULTIMA_VISTA_AVISOS_KEY, String(Date.now()));
+      }
+      recibidos.avisos = true;
+      checkLoaded();
+    });
 
     const clock = setInterval(() => forceTick((t) => t + 1), 1000);
-    return () => { unsubProductos(); unsubAdmins(); unsubSolicitudes(); unsubPapelera(); clearInterval(clock); };
+    return () => { unsubProductos(); unsubAdmins(); unsubComisionistas(); unsubSolicitudes(); unsubPapelera(); unsubAvisos(); clearInterval(clock); };
   }, []);
 
   useEffect(() => {
@@ -267,13 +513,20 @@ export default function App() {
     }
     const nuevos = vendidosAhora.filter((p) => !vendidoIdsPrevRef.current.has(p.id));
     if (nuevos.length > 0) {
-      const items = nuevos.map((p) => ({
-        id: `v-${p.id}`,
-        tipo: "vendido",
-        texto: <><b>{p.nombre}</b> se vendió — bájalo de: {p.canales.map((c) => CANALES_SUGERIDOS.find((s) => s.id === c)?.label || c).join(", ") || "sus canales publicados"}</>,
-      }));
+      const items = nuevos.map((p) => {
+        const canalesTxt = p.canales.map((c) => CANALES_SUGERIDOS.find((s) => s.id === c)?.label || c).join(", ") || "sus canales publicados";
+        return {
+          id: `v-${p.id}`,
+          tipo: "vendido",
+          texto: <><b>{p.nombre}</b> se vendió — bájalo de: {canalesTxt}</>,
+          mensaje: `${p.nombre} se vendió — bájalo de: ${canalesTxt}`,
+        };
+      });
       setNotificaciones((prev) => [...items, ...prev]);
-      items.forEach((it) => setTimeout(() => setNotificaciones((prev) => prev.filter((n) => n.id !== it.id)), 20000));
+      items.forEach((it) => {
+        fsSet("avisos", it.id, { id: it.id, tipo: it.tipo, mensaje: it.mensaje, fecha: Date.now() });
+        setTimeout(() => setNotificaciones((prev) => prev.filter((n) => n.id !== it.id)), 20000);
+      });
     }
     vendidoIdsPrevRef.current = idsAhora;
   }, [productos]);
@@ -292,9 +545,13 @@ export default function App() {
         id: `s-${s.id}`,
         tipo: "conseguido",
         texto: <>Ya se consiguió: <b>{s.titulo}</b> — pueden dejar de buscarlo.</>,
+        mensaje: `Ya se consiguió: ${s.titulo} — pueden dejar de buscarlo.`,
       }));
       setNotificaciones((prev) => [...items, ...prev]);
-      items.forEach((it) => setTimeout(() => setNotificaciones((prev) => prev.filter((n) => n.id !== it.id)), 20000));
+      items.forEach((it) => {
+        fsSet("avisos", it.id, { id: it.id, tipo: it.tipo, mensaje: it.mensaje, fecha: Date.now() });
+        setTimeout(() => setNotificaciones((prev) => prev.filter((n) => n.id !== it.id)), 20000);
+      });
     }
     conseguidoIdsPrevRef.current = idsAhora;
   }, [solicitudes]);
@@ -322,12 +579,16 @@ export default function App() {
             id: `m-${p.id}-${s.id}`,
             tipo: "match",
             texto: <><b>{p.nombre}</b> podría calzar con la solicitud de {s.clienteNombre || "un cliente"}: "{s.titulo}"</>,
+            mensaje: `${p.nombre} podría calzar con la solicitud de ${s.clienteNombre || "un cliente"}: "${s.titulo}"`,
           });
         });
       });
       if (items.length > 0) {
         setNotificaciones((prev) => [...items, ...prev]);
-        items.forEach((it) => setTimeout(() => setNotificaciones((prev) => prev.filter((n) => n.id !== it.id)), 30000));
+        items.forEach((it) => {
+          fsSet("avisos", it.id, { id: it.id, tipo: it.tipo, mensaje: it.mensaje, fecha: Date.now() });
+          setTimeout(() => setNotificaciones((prev) => prev.filter((n) => n.id !== it.id)), 30000);
+        });
       }
     }
     productoIdsPrevRef.current = idsAhora;
@@ -348,6 +609,8 @@ export default function App() {
       const cambioBase = prev.base !== p.precioBase;
       const cambioMinimo = prev.minimo !== p.precioMinimo;
       if (cambioBase || cambioMinimo) {
+        const mensajeBase = cambioBase ? `: ${money(prev.base)} → ${money(p.precioBase)}` : "";
+        const mensajeMinimo = cambioMinimo ? ` (mínimo: ${money(prev.minimo)} → ${money(p.precioMinimo)})` : "";
         items.push({
           id: `pr-${p.id}-${Date.now()}`,
           tipo: "precio",
@@ -358,12 +621,16 @@ export default function App() {
               {cambioMinimo ? <> (mínimo: {money(prev.minimo)} → {money(p.precioMinimo)})</> : null}
             </>
           ),
+          mensaje: `Cambio de precio en ${p.nombre}${mensajeBase}${mensajeMinimo}`,
         });
       }
     });
     if (items.length > 0) {
       setNotificaciones((prev) => [...items, ...prev]);
-      items.forEach((it) => setTimeout(() => setNotificaciones((prev) => prev.filter((n) => n.id !== it.id)), 20000));
+      items.forEach((it) => {
+        fsSet("avisos", it.id, { id: it.id, tipo: it.tipo, mensaje: it.mensaje, fecha: Date.now() });
+        setTimeout(() => setNotificaciones((prev) => prev.filter((n) => n.id !== it.id)), 20000);
+      });
     }
     preciosPrevRef.current = actual;
   }, [productos]);
@@ -400,14 +667,75 @@ export default function App() {
     if (!ok) avisarError("No se pudo actualizar la papelera. Revisa tu conexión e intenta de nuevo.");
     return ok;
   };
-  const guardarAdminFS = async (admin) => {
-    const ok = await fsSet("admins", admin.usuario, admin);
-    if (!ok) avisarError("No se pudo guardar los administradores. Revisa tu conexión e intenta de nuevo.");
-    return ok;
+  const crearAdminFS = async (usuario, password) => {
+    const creado = await crearAdminAuth(usuario, password);
+    if (!creado.ok) return creado;
+    const guardadoLista = await fsSet("admins", usuario.trim(), { usuario: usuario.trim() });
+    if (!guardadoLista) return { ok: false, error: "Se creó la cuenta pero no se pudo guardar en la lista de administradores. Revisa tu conexión." };
+    return { ok: true };
+  };
+  const crearPrimerAdminYEntrar = async (usuario, password) => {
+    const creado = await crearAdminAuth(usuario, password);
+    if (!creado.ok) return creado;
+    const entrado = await iniciarSesionAdminAuth(usuario, password);
+    if (!entrado.ok) return entrado;
+    const guardadoLista = await fsSet("admins", usuario.trim(), { usuario: usuario.trim() });
+    if (!guardadoLista) return { ok: false, error: "Se creó la cuenta pero no se pudo guardar en la lista de administradores. Revisa tu conexión." };
+    setSesion({ tipo: "admin", usuario: usuario.trim() });
+    return { ok: true };
+  };
+  const iniciarSesionAdminFS = async (usuario, password) => {
+    const entrado = await iniciarSesionAdminAuth(usuario, password);
+    if (!entrado.ok) return entrado;
+    const u = usuario.trim().toLowerCase();
+    const existe = admins.some((a) => a.usuario.toLowerCase() === u);
+    if (!existe) {
+      await signOut(auth);
+      return { ok: false, error: "Esta cuenta fue desactivada por un administrador." };
+    }
+    setSesion({ tipo: "admin", usuario: usuario.trim() });
+    return { ok: true };
+  };
+  const cambiarPasswordPropiaFS = async (passwordActual, passwordNueva) => {
+    return cambiarPasswordPropiaAuth(passwordActual, passwordNueva);
   };
   const eliminarAdminFS = async (usuario) => {
     const ok = await fsDelete("admins", usuario);
     if (!ok) avisarError("No se pudo guardar los administradores. Revisa tu conexión e intenta de nuevo.");
+    return ok;
+  };
+
+  // Si el navegador ya tenía una sesión de Firebase Auth activa (recargaste la página),
+  // la retoma sola — siempre que ese usuario siga en la lista de administradores.
+  useEffect(() => {
+    if (!loaded || sesion) return;
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (!user) return;
+      const usuario = user.email.replace(`@${ADMIN_EMAIL_DOMAIN}`, "");
+      const existe = admins.some((a) => a.usuario.toLowerCase() === usuario.toLowerCase());
+      if (existe) setSesion({ tipo: "admin", usuario });
+      else signOut(auth);
+    });
+    return () => unsub();
+  }, [loaded, admins, sesion]);
+
+  // Si a un admin lo quitan de la lista mientras tiene la app abierta, se le cierra la sesión al instante.
+  useEffect(() => {
+    if (!loaded || sesion?.tipo !== "admin") return;
+    const sigueSiendoAdmin = admins.some((a) => a.usuario.toLowerCase() === sesion.usuario.toLowerCase());
+    if (!sigueSiendoAdmin) {
+      signOut(auth);
+      setSesion(null);
+    }
+  }, [admins, loaded]);
+  const guardarComisionistaFS = async (nombre) => {
+    const ok = await fsSet("comisionistas", nombre, { nombre });
+    if (!ok) avisarError("No se pudo guardar el comisionista. Revisa tu conexión e intenta de nuevo.");
+    return ok;
+  };
+  const eliminarComisionistaFS = async (nombre) => {
+    const ok = await fsDelete("comisionistas", nombre);
+    if (!ok) avisarError("No se pudo eliminar el comisionista. Revisa tu conexión e intenta de nuevo.");
     return ok;
   };
 
@@ -457,7 +785,8 @@ export default function App() {
     return (
       <Login
         admins={admins}
-        onGuardarAdmin={guardarAdminFS}
+        onCrearPrimerAdmin={crearPrimerAdminYEntrar}
+        onIniciarSesion={iniciarSesionAdminFS}
         onEntrar={setSesion}
         error={errorGuardado}
       />
@@ -482,12 +811,24 @@ export default function App() {
       <style>{fontImports}</style>
       <TopBar
         sesion={sesion}
-        onCambiar={() => setSesion(null)}
-        onHistorial={() => { setVista(vista === "historial" ? "inventario" : "historial"); setUltimaVistaHistorial(Date.now()); }}
-        onSolicitudes={() => { setVista(vista === "solicitudes" ? "inventario" : "solicitudes"); setUltimaVistaSolicitudes(Date.now()); }}
+        onCambiar={() => { if (sesion?.tipo === "admin") signOut(auth); setSesion(null); }}
+        onHistorial={() => {
+          setVista(vista === "historial" ? "inventario" : "historial");
+          const ahora = Date.now();
+          setUltimaVistaHistorial(ahora);
+          localStorage.setItem(ULTIMA_VISTA_HISTORIAL_KEY, String(ahora));
+        }}
+        onSolicitudes={() => {
+          setVista(vista === "solicitudes" ? "inventario" : "solicitudes");
+          const ahora = Date.now();
+          setUltimaVistaSolicitudes(ahora);
+          localStorage.setItem(ULTIMA_VISTA_SOLICITUDES_KEY, String(ahora));
+        }}
         vistaActiva={vista}
         historialBadge={historialSinVer}
         solicitudesBadge={solicitudesSinVer}
+        notifPushEstado={notifPushEstado}
+        onActivarPush={handleActivarPush}
       />
       {errorGuardado && (
         <div style={styles.notifWrap} className="app-shell">
@@ -521,22 +862,23 @@ export default function App() {
         </div>
       )}
       {vista === "historial" ? (
-        <Historial productos={productos} esAdmin={esAdmin} sesion={sesion} onCambiarEstado={cambiarEstado} onEliminar={eliminar} onVolver={() => setVista("inventario")} />
+        <Historial productos={productos} esAdmin={esAdmin} sesion={sesion} comisionistas={comisionistas} onCambiarEstado={cambiarEstado} onEliminar={eliminar} onVolver={() => setVista("inventario")} />
       ) : vista === "solicitudes" ? (
         <Solicitudes solicitudes={solicitudes} onGuardarSolicitud={guardarSolicitudFS} onEliminarSolicitud={eliminarSolicitudFS} onGuardarPapeleraEntry={guardarPapeleraEntryFS} productos={productos} esAdmin={esAdmin} sesion={sesion} onVolver={() => setVista("inventario")} />
       ) : (
-        <Inventario productos={productos} solicitudes={solicitudes} onGuardarProducto={guardarProductoFS} esAdmin={esAdmin} sesion={sesion} admins={admins} onGuardarAdmin={guardarAdminFS} onEliminarAdmin={eliminarAdminFS} onCambiarEstado={cambiarEstado} onEliminar={eliminar} papelera={papelera} onRestaurar={restaurarDePapelera} onEliminarDefinitivo={eliminarDefinitivo} />
+        <Inventario productos={productos} solicitudes={solicitudes} onGuardarProducto={guardarProductoFS} esAdmin={esAdmin} sesion={sesion} admins={admins} onCrearAdmin={crearAdminFS} onEliminarAdmin={eliminarAdminFS} onCambiarPasswordPropia={cambiarPasswordPropiaFS} comisionistas={comisionistas} onGuardarComisionista={guardarComisionistaFS} onEliminarComisionista={eliminarComisionistaFS} onCambiarEstado={cambiarEstado} onEliminar={eliminar} papelera={papelera} onRestaurar={restaurarDePapelera} onEliminarDefinitivo={eliminarDefinitivo} />
       )}
     </div>
   );
 }
 
-function Login({ admins, onGuardarAdmin, onEntrar, error: errorGuardado }) {
+function Login({ admins, onCrearPrimerAdmin, onIniciarSesion, onEntrar, error: errorGuardado }) {
   const [vista, setVista] = useState("landing"); // 'landing' | 'adminAuth'
   const [usuarioAdmin, setUsuarioAdmin] = useState("");
   const [passAdmin, setPassAdmin] = useState("");
   const [passAdmin2, setPassAdmin2] = useState("");
   const [error, setError] = useState("");
+  const [cargando, setCargando] = useState(false);
 
   const esPrimerAdmin = admins.length === 0;
 
@@ -544,25 +886,26 @@ function Login({ admins, onGuardarAdmin, onEntrar, error: errorGuardado }) {
     setUsuarioAdmin(""); setPassAdmin(""); setPassAdmin2(""); setError("");
   };
 
-  const iniciarSesionAdmin = () => {
+  const iniciarSesionAdmin = async () => {
     setError("");
     const u = usuarioAdmin.trim();
     if (!u || !passAdmin) { setError("Completa el usuario y la contraseña."); return; }
-    const encontrado = admins.find((a) => a.usuario.toLowerCase() === u.toLowerCase());
-    if (!encontrado) { setError("Ese usuario no existe. Pídele a un administrador que te cree una cuenta."); return; }
-    if (encontrado.password !== passAdmin) { setError("Contraseña incorrecta."); return; }
-    onEntrar({ tipo: "admin", usuario: encontrado.usuario });
+    setCargando(true);
+    const resultado = await onIniciarSesion(u, passAdmin);
+    setCargando(false);
+    if (!resultado.ok) setError(resultado.error);
   };
 
   const crearPrimerAdmin = async () => {
     setError("");
     const u = usuarioAdmin.trim();
     if (!u) { setError("Escribe un nombre de usuario."); return; }
-    if (passAdmin.length < 4) { setError("La contraseña debe tener al menos 4 caracteres."); return; }
+    if (passAdmin.length < 6) { setError("La contraseña debe tener al menos 6 caracteres."); return; }
     if (passAdmin !== passAdmin2) { setError("Las contraseñas no coinciden."); return; }
-    const nuevo = { usuario: u, password: passAdmin };
-    await onGuardarAdmin(nuevo);
-    onEntrar({ tipo: "admin", usuario: u });
+    setCargando(true);
+    const resultado = await onCrearPrimerAdmin(u, passAdmin);
+    setCargando(false);
+    if (!resultado.ok) setError(resultado.error);
   };
 
   if (vista === "adminAuth") {
@@ -577,18 +920,18 @@ function Login({ admins, onGuardarAdmin, onEntrar, error: errorGuardado }) {
             <div style={styles.confirmText}>Todavía no hay ningún administrador. Esta cuenta va a poder crear las demás cuentas de administrador.</div>
           )}
 
-          <input style={{ ...styles.input, marginTop: 12 }} placeholder="Usuario" value={usuarioAdmin} onChange={(e) => { setUsuarioAdmin(e.target.value); setError(""); }} />
-          <input style={{ ...styles.input, marginTop: 8 }} type="password" placeholder="Contraseña" value={passAdmin} onChange={(e) => { setPassAdmin(e.target.value); setError(""); }} onKeyDown={(e) => e.key === "Enter" && !esPrimerAdmin && iniciarSesionAdmin()} />
+          <input style={{ ...styles.input, marginTop: 12 }} placeholder="Usuario" value={usuarioAdmin} onChange={(e) => { setUsuarioAdmin(e.target.value); setError(""); }} disabled={cargando} />
+          <input style={{ ...styles.input, marginTop: 8 }} type="password" placeholder="Contraseña" value={passAdmin} onChange={(e) => { setPassAdmin(e.target.value); setError(""); }} onKeyDown={(e) => e.key === "Enter" && !esPrimerAdmin && iniciarSesionAdmin()} disabled={cargando} />
           {esPrimerAdmin && (
-            <input style={{ ...styles.input, marginTop: 8 }} type="password" placeholder="Repite la contraseña" value={passAdmin2} onChange={(e) => { setPassAdmin2(e.target.value); setError(""); }} />
+            <input style={{ ...styles.input, marginTop: 8 }} type="password" placeholder="Repite la contraseña" value={passAdmin2} onChange={(e) => { setPassAdmin2(e.target.value); setError(""); }} disabled={cargando} />
           )}
           {error && <div style={styles.errorText}>{error}</div>}
           {errorGuardado && <div style={styles.errorText}><AlertTriangle size={12} style={{ verticalAlign: "-2px" }} /> {errorGuardado}</div>}
 
           <div style={styles.loginNewRow}>
-            <button style={styles.cancelBtn} onClick={() => { setVista("landing"); resetAdminForm(); }}>Volver</button>
-            <button style={{ ...styles.loginEnterBtn, flex: 1 }} onClick={esPrimerAdmin ? crearPrimerAdmin : iniciarSesionAdmin}>
-              {esPrimerAdmin ? "Crear y entrar" : "Entrar"}
+            <button style={styles.cancelBtn} onClick={() => { setVista("landing"); resetAdminForm(); }} disabled={cargando}>Volver</button>
+            <button style={{ ...styles.loginEnterBtn, flex: 1 }} onClick={esPrimerAdmin ? crearPrimerAdmin : iniciarSesionAdmin} disabled={cargando}>
+              {cargando ? "Un momento…" : esPrimerAdmin ? "Crear y entrar" : "Entrar"}
             </button>
           </div>
         </div>
@@ -620,7 +963,7 @@ function Login({ admins, onGuardarAdmin, onEntrar, error: errorGuardado }) {
   );
 }
 
-function TopBar({ sesion, onCambiar, onHistorial, onSolicitudes, vistaActiva, historialBadge, solicitudesBadge }) {
+function TopBar({ sesion, onCambiar, onHistorial, onSolicitudes, vistaActiva, historialBadge, solicitudesBadge, notifPushEstado, onActivarPush }) {
   return (
     <div style={styles.topBar}>
       <div className="app-shell" style={styles.topBarInner}>
@@ -628,6 +971,16 @@ function TopBar({ sesion, onCambiar, onHistorial, onSolicitudes, vistaActiva, hi
           <img src={LOGO_DATA_URL} alt="Elite Carhouse" style={styles.topBarLogo} />
         </div>
         <div style={styles.topBarRight}>
+          {notifPushEstado !== "activo" && (
+            <button
+              style={styles.historialBtn}
+              onClick={onActivarPush}
+              disabled={notifPushEstado === "activando"}
+              title="Activar notificaciones aunque la app esté cerrada"
+            >
+              <Bell size={15} />
+            </button>
+          )}
           <button style={{ ...styles.historialBtn, ...(vistaActiva === "solicitudes" ? styles.historialBtnActive : {}) }} onClick={onSolicitudes} title="Solicitudes de clientes">
             <Target size={15} />
             {solicitudesBadge > 0 && <span style={styles.navBadge}>{solicitudesBadge > 9 ? "9+" : solicitudesBadge}</span>}
@@ -647,7 +1000,7 @@ function TopBar({ sesion, onCambiar, onHistorial, onSolicitudes, vistaActiva, hi
 
 /* ---------------- Inventario ---------------- */
 
-function Inventario({ productos, solicitudes, onGuardarProducto, esAdmin, sesion, admins, onGuardarAdmin, onEliminarAdmin, onCambiarEstado, onEliminar, papelera, onRestaurar, onEliminarDefinitivo }) {
+function Inventario({ productos, solicitudes, onGuardarProducto, esAdmin, sesion, admins, onCrearAdmin, onEliminarAdmin, onCambiarPasswordPropia, comisionistas, onGuardarComisionista, onEliminarComisionista, onCambiarEstado, onEliminar, papelera, onRestaurar, onEliminarDefinitivo }) {
   const [filtro, setFiltro] = useState("disponible");
   const [filtroCategoria, setFiltroCategoria] = useState("todas");
   const [categoriaAbierta, setCategoriaAbierta] = useState(false);
@@ -742,7 +1095,7 @@ function Inventario({ productos, solicitudes, onGuardarProducto, esAdmin, sesion
   };
 
   if (showConfig) {
-    return <AdminPanel admins={admins} onGuardarAdmin={onGuardarAdmin} onEliminarAdmin={onEliminarAdmin} sesion={sesion} onClose={() => setShowConfig(false)} papelera={papelera} onRestaurar={onRestaurar} onEliminarDefinitivo={onEliminarDefinitivo} />;
+    return <AdminPanel admins={admins} onCrearAdmin={onCrearAdmin} onEliminarAdmin={onEliminarAdmin} onCambiarPasswordPropia={onCambiarPasswordPropia} comisionistas={comisionistas} onGuardarComisionista={onGuardarComisionista} onEliminarComisionista={onEliminarComisionista} sesion={sesion} onClose={() => setShowConfig(false)} papelera={papelera} onRestaurar={onRestaurar} onEliminarDefinitivo={onEliminarDefinitivo} />;
   }
 
   if (showForm && esAdmin) {
@@ -761,6 +1114,7 @@ function Inventario({ productos, solicitudes, onGuardarProducto, esAdmin, sesion
         producto={detalle}
         esAdmin={esAdmin}
         sesion={sesion}
+        comisionistas={comisionistas}
         onBack={() => setDetalle(null)}
         onEditar={() => { setEditing(detalle); setDetalle(null); setShowForm(true); }}
         onCambiarEstado={cambiarEstado}
@@ -931,7 +1285,7 @@ function ProductoCard({ producto, onClick }) {
   );
 }
 
-function ProductoDetalle({ producto, esAdmin, sesion, onBack, onEditar, onCambiarEstado, onEliminar }) {
+function ProductoDetalle({ producto, esAdmin, sesion, comisionistas, onBack, onEditar, onCambiarEstado, onEliminar }) {
   const [confirmando, setConfirmando] = useState(null);
   const [precioVenta, setPrecioVenta] = useState(producto.precioBase);
   const [comisionistaNombre, setComisionistaNombre] = useState(producto.comisionistaNombre || "");
@@ -971,9 +1325,21 @@ function ProductoDetalle({ producto, esAdmin, sesion, onBack, onEditar, onCambia
     }
   };
 
-  const abrirWhatsApp = () => {
-    const texto = encodeURIComponent(textoPublicacion(producto));
-    window.open(`https://wa.me/?text=${texto}`, "_blank");
+  const abrirWhatsApp = async () => {
+    const resultado = await compartirProductoConFotos(producto);
+    if (resultado.ok) return;
+    // El navegador no soporta compartir fotos (típico en computador de escritorio):
+    // bajamos las fotos para que las adjunte a mano y abrimos WhatsApp solo con el texto.
+    if (fotosDeProducto(producto).length > 0) descargarFotosProducto(producto);
+    window.open(`https://wa.me/?text=${encodeURIComponent(resultado.texto)}`, "_blank");
+  };
+
+  const abrirWhatsAppInterno = async () => {
+    const texto = textoFichaInterna(producto);
+    const resultado = await compartirProductoConFotos(producto, texto);
+    if (resultado.ok) return;
+    if (fotosDeProducto(producto).length > 0) descargarFotosProducto(producto);
+    window.open(`https://wa.me/?text=${encodeURIComponent(resultado.texto)}`, "_blank");
   };
 
   return (
@@ -1043,10 +1409,10 @@ function ProductoDetalle({ producto, esAdmin, sesion, onBack, onEditar, onCambia
           <div style={styles.margenBox}>
             <div style={styles.margenLabel}><Tag size={12} /> MARGEN DE NEGOCIACIÓN</div>
             <div style={styles.margenRow}>
-              <span>Precio publicado</span><b>{money(producto.precioBase)}</b>
+              <span>Precio para publicar</span><b>{money(producto.precioBase)}</b>
             </div>
             <div style={styles.margenRow}>
-              <span>Mínimo autorizado</span><b style={styles.margenMinValue}>{money(producto.precioMinimo)}</b>
+              <span>Precio mínimo</span><b style={styles.margenMinValue}>{money(producto.precioMinimo)}</b>
             </div>
           </div>
         )}
@@ -1112,7 +1478,20 @@ function ProductoDetalle({ producto, esAdmin, sesion, onBack, onEditar, onCambia
             <button style={styles.cancelBtn} onClick={() => setMostrarTexto(false)}>Cerrar</button>
             <button style={styles.confirmSoldBtn} onClick={copiarTexto}>{copiado ? <><Check size={15} /> Copiado</> : <><Copy size={15} /> Copiar texto</>}</button>
           </div>
-          <button style={styles.whatsappBtn} onClick={abrirWhatsApp}><MessageCircle size={15} /> Enviar por WhatsApp</button>
+          <button style={styles.whatsappBtn} onClick={abrirWhatsApp}><MessageCircle size={15} /> Enviar por WhatsApp{fotos.length > 0 ? " (con fotos)" : ""}</button>
+          {fotos.length > 0 && (
+            <div style={styles.whatsappNota}>
+              En el celular se abre el panel para elegir WhatsApp y enviar el texto con las fotos juntas. En computador no se puede adjuntar fotos por enlace: se descargan solas y las adjuntas a mano en WhatsApp Web.
+            </div>
+          )}
+          {esAdmin && (
+            <>
+              <button style={styles.whatsappBtnInterno} onClick={abrirWhatsAppInterno}><Tag size={15} /> Compartir ficha interna (equipo)</button>
+              <div style={styles.whatsappNota}>
+                Incluye precio mínimo y notas internas. Úsalo solo para mandarlo al equipo, nunca al comprador.
+              </div>
+            </>
+          )}
         </div>
       ) : (
         <button style={styles.textBtn} onClick={() => setMostrarTexto(true)}><Copy size={14} /> Generar texto para publicar</button>
@@ -1132,7 +1511,19 @@ function ProductoDetalle({ producto, esAdmin, sesion, onBack, onEditar, onCambia
                 <div style={styles.warnBox}>⚠️ Este precio está por debajo del mínimo autorizado ({money(producto.precioMinimo)}).</div>
               )}
               <div style={styles.confirmText}>¿Quién lo vendió? (para el Cuadro de Honor)</div>
-              <input style={styles.input} placeholder="Nombre del comisionista o vendedor" value={comisionistaNombre} onChange={(e) => setComisionistaNombre(e.target.value)} />
+              {comisionistas && comisionistas.length > 0 ? (
+                <select style={styles.input} value={comisionistaNombre} onChange={(e) => setComisionistaNombre(e.target.value)}>
+                  <option value="">Selecciona un comisionista…</option>
+                  {comisionistas.map((c) => (
+                    <option key={c.nombre} value={c.nombre}>{c.nombre}</option>
+                  ))}
+                </select>
+              ) : (
+                <>
+                  <input style={styles.input} placeholder="Nombre del comisionista o vendedor" value={comisionistaNombre} onChange={(e) => setComisionistaNombre(e.target.value)} />
+                  <div style={styles.whatsappNota}>Aún no has agregado comisionistas a la lista fija. Ve a Configuración para crearla y que esto se convierta en un selector.</div>
+                </>
+              )}
               <div style={styles.confirmText}>Se le va a avisar a todo el equipo para que baje esto de: {producto.canales.map((c) => CANALES_SUGERIDOS.find((s) => s.id === c)?.label).filter(Boolean).join(", ") || "—"}</div>
               <div style={styles.row8}>
                 <button style={styles.cancelBtn} onClick={() => setConfirmando(null)}>Cancelar</button>
@@ -1179,27 +1570,33 @@ function ProductoDetalle({ producto, esAdmin, sesion, onBack, onEditar, onCambia
   );
 }
 
-function AdminPanel({ admins, onGuardarAdmin, onEliminarAdmin, sesion, onClose, papelera, onRestaurar, onEliminarDefinitivo }) {
+function AdminPanel({ admins, onCrearAdmin, onEliminarAdmin, onCambiarPasswordPropia, comisionistas, onGuardarComisionista, onEliminarComisionista, sesion, onClose, papelera, onRestaurar, onEliminarDefinitivo }) {
   const [actual, setActual] = useState("");
   const [nueva, setNueva] = useState("");
   const [nueva2, setNueva2] = useState("");
   const [error, setError] = useState("");
   const [guardado, setGuardado] = useState(false);
+  const [cambiando, setCambiando] = useState(false);
 
   const [nuevoUsuario, setNuevoUsuario] = useState("");
   const [nuevoPass, setNuevoPass] = useState("");
   const [nuevoPass2, setNuevoPass2] = useState("");
   const [errorNuevo, setErrorNuevo] = useState("");
   const [creado, setCreado] = useState(false);
+  const [creando, setCreando] = useState(false);
 
-  const yo = admins.find((a) => a.usuario === sesion.usuario);
+  const [nuevoComisionista, setNuevoComisionista] = useState("");
+  const [errorComisionista, setErrorComisionista] = useState("");
 
   const cambiar = async () => {
     setError("");
-    if (!yo || actual !== yo.password) { setError("La contraseña actual no coincide."); return; }
-    if (nueva.length < 4) { setError("La nueva contraseña debe tener al menos 4 caracteres."); return; }
+    if (!actual) { setError("Escribe tu contraseña actual."); return; }
+    if (nueva.length < 6) { setError("La nueva contraseña debe tener al menos 6 caracteres."); return; }
     if (nueva !== nueva2) { setError("Las contraseñas nuevas no coinciden."); return; }
-    await onGuardarAdmin({ ...yo, password: nueva });
+    setCambiando(true);
+    const resultado = await onCambiarPasswordPropia(actual, nueva);
+    setCambiando(false);
+    if (!resultado.ok) { setError(resultado.error); return; }
     setGuardado(true);
     setActual(""); setNueva(""); setNueva2("");
     setTimeout(() => setGuardado(false), 2000);
@@ -1210,9 +1607,12 @@ function AdminPanel({ admins, onGuardarAdmin, onEliminarAdmin, sesion, onClose, 
     const u = nuevoUsuario.trim();
     if (!u) { setErrorNuevo("Escribe un nombre de usuario."); return; }
     if (admins.some((a) => a.usuario.toLowerCase() === u.toLowerCase())) { setErrorNuevo("Ese usuario ya existe."); return; }
-    if (nuevoPass.length < 4) { setErrorNuevo("La contraseña debe tener al menos 4 caracteres."); return; }
+    if (nuevoPass.length < 6) { setErrorNuevo("La contraseña debe tener al menos 6 caracteres."); return; }
     if (nuevoPass !== nuevoPass2) { setErrorNuevo("Las contraseñas no coinciden."); return; }
-    await onGuardarAdmin({ usuario: u, password: nuevoPass });
+    setCreando(true);
+    const resultado = await onCrearAdmin(u, nuevoPass);
+    setCreando(false);
+    if (!resultado.ok) { setErrorNuevo(resultado.error); return; }
     setNuevoUsuario(""); setNuevoPass(""); setNuevoPass2("");
     setCreado(true);
     setTimeout(() => setCreado(false), 2000);
@@ -1222,6 +1622,19 @@ function AdminPanel({ admins, onGuardarAdmin, onEliminarAdmin, sesion, onClose, 
     if (usuario === sesion.usuario) return;
     if (admins.length <= 1) return;
     await onEliminarAdmin(usuario);
+  };
+
+  const agregarComisionista = async () => {
+    setErrorComisionista("");
+    const n = nuevoComisionista.trim();
+    if (!n) { setErrorComisionista("Escribe un nombre."); return; }
+    if (comisionistas.some((c) => c.nombre.toLowerCase() === n.toLowerCase())) { setErrorComisionista("Ese nombre ya está en la lista."); return; }
+    await onGuardarComisionista(n);
+    setNuevoComisionista("");
+  };
+
+  const eliminarComisionista = async (nombre) => {
+    await onEliminarComisionista(nombre);
   };
 
   return (
@@ -1250,7 +1663,29 @@ function AdminPanel({ admins, onGuardarAdmin, onEliminarAdmin, sesion, onClose, 
         <input style={{ ...styles.input, marginTop: 8 }} type="password" placeholder="Contraseña" value={nuevoPass} onChange={(e) => { setNuevoPass(e.target.value); setErrorNuevo(""); }} />
         <input style={{ ...styles.input, marginTop: 8 }} type="password" placeholder="Repite la contraseña" value={nuevoPass2} onChange={(e) => { setNuevoPass2(e.target.value); setErrorNuevo(""); }} />
         {errorNuevo && <div style={styles.errorText}>{errorNuevo}</div>}
-        <button style={styles.saveBtnSecondary} onClick={agregarAdmin}>{creado ? <><Check size={16} /> Administrador agregado</> : <><Plus size={16} /> Agregar administrador</>}</button>
+        <button style={styles.saveBtnSecondary} onClick={agregarAdmin} disabled={creando}>{creando ? "Creando…" : creado ? <><Check size={16} /> Administrador agregado</> : <><Plus size={16} /> Agregar administrador</>}</button>
+
+        <div style={styles.divider} />
+
+        <div style={styles.eyebrow}>COMISIONISTAS</div>
+        <div style={styles.title}>Lista fija para "¿Quién lo vendió?"</div>
+        <div style={styles.smallLabel}>ACTUALES</div>
+        {comisionistas.length === 0 ? (
+          <div style={styles.confirmText}>Todavía no hay nadie en la lista. Agrega los nombres del equipo comercial para que aparezcan como selector al confirmar una venta.</div>
+        ) : (
+          <div style={styles.adminsList}>
+            {comisionistas.map((c) => (
+              <div key={c.nombre} style={styles.adminRow}>
+                <span style={styles.adminRowName}><User size={13} /> {c.nombre}</span>
+                <button style={styles.adminRemoveBtn} onClick={() => eliminarComisionista(c.nombre)}><Trash2 size={13} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={styles.smallLabel}>AGREGAR COMISIONISTA</div>
+        <input style={styles.input} placeholder="Nombre del comisionista o vendedor" value={nuevoComisionista} onChange={(e) => { setNuevoComisionista(e.target.value); setErrorComisionista(""); }} onKeyDown={(e) => e.key === "Enter" && agregarComisionista()} />
+        {errorComisionista && <div style={styles.errorText}>{errorComisionista}</div>}
+        <button style={styles.saveBtnSecondary} onClick={agregarComisionista}><Plus size={16} /> Agregar comisionista</button>
 
         <div style={styles.divider} />
 
@@ -1289,7 +1724,7 @@ function AdminPanel({ admins, onGuardarAdmin, onEliminarAdmin, sesion, onClose, 
         <input style={{ ...styles.input, marginTop: 8 }} type="password" placeholder="Nueva contraseña" value={nueva} onChange={(e) => setNueva(e.target.value)} />
         <input style={{ ...styles.input, marginTop: 8 }} type="password" placeholder="Repite la nueva contraseña" value={nueva2} onChange={(e) => setNueva2(e.target.value)} />
         {error && <div style={styles.errorText}>{error}</div>}
-        <button style={styles.saveBtn} onClick={cambiar}>{guardado ? <><Check size={16} /> Guardada</> : "Guardar nueva contraseña"}</button>
+        <button style={styles.saveBtn} onClick={cambiar} disabled={cambiando}>{cambiando ? "Guardando…" : guardado ? <><Check size={16} /> Guardada</> : "Guardar nueva contraseña"}</button>
       </div>
     </div>
   );
@@ -1301,6 +1736,20 @@ function ProductoForm({ inicial, onCancel, onGuardar }) {
   const [precioBase, setPrecioBase] = useState(inicial?.precioBase ?? "");
   const [precioMinimo, setPrecioMinimo] = useState(inicial?.precioMinimo ?? "");
   const [detalles, setDetalles] = useState(inicial?.detalles || "");
+  const [anioModelo, setAnioModelo] = useState(inicial?.anioModelo || "");
+  const [kilometraje, setKilometraje] = useState(inicial?.kilometraje ?? "");
+  const [duenos, setDuenos] = useState(inicial?.duenos ?? 1);
+  const [traccion, setTraccion] = useState(inicial?.traccion || "");
+  const [mantenimientosAlDia, setMantenimientosAlDia] = useState(inicial?.mantenimientosAlDia ?? true);
+  const [clutchNuevo, setClutchNuevo] = useState(inicial?.clutchNuevo ?? false);
+  const [soatHasta, setSoatHasta] = useState(inicial?.soatHasta || "");
+  const [tecnomecanicaEstado, setTecnomecanicaEstado] = useState(inicial?.tecnomecanicaEstado || "");
+  const [tecnomecanicaHasta, setTecnomecanicaHasta] = useState(inicial?.tecnomecanicaHasta || "");
+  const [transitoCiudad, setTransitoCiudad] = useState(inicial?.transitoCiudad || "");
+  const [prenda, setPrenda] = useState(inicial?.prenda ?? false);
+  const [prendaEntidad, setPrendaEntidad] = useState(inicial?.prendaEntidad || "");
+  const [estadoGeneral, setEstadoGeneral] = useState(inicial?.estadoGeneral || "");
+  const [camposError, setCamposError] = useState("");
   const [notas, setNotas] = useState(inicial?.notas || "");
   const [canales, setCanales] = useState(inicial?.canales || []);
   const [canalCustom, setCanalCustom] = useState("");
@@ -1332,22 +1781,62 @@ function ProductoForm({ inicial, onCancel, onGuardar }) {
 
   const quitarFoto = (idx) => setFotos((prev) => prev.filter((_, i) => i !== idx));
 
+  const esVehiculoOMoto = categoria === "vehiculo" || categoria === "moto";
+
   const guardar = () => {
     setPrecioError("");
+    setCamposError("");
     if (!nombre.trim() || !precioBase) return;
     if (precioMinimo !== "" && Number(precioMinimo) > Number(precioBase)) {
       setPrecioError("El precio mínimo no puede ser mayor que el precio base.");
       return;
+    }
+    let detallesFinal = detalles.trim();
+    if (esVehiculoOMoto) {
+      const faltantes = [];
+      if (!anioModelo) faltantes.push("Año modelo");
+      if (kilometraje === "") faltantes.push("Kilometraje");
+      if (!duenos) faltantes.push("Número de dueños");
+      if (categoria === "vehiculo" && !traccion) faltantes.push("Tracción");
+      if (!soatHasta) faltantes.push("SOAT vigente hasta");
+      if (!tecnomecanicaEstado) faltantes.push("Tecnomecánica");
+      if (tecnomecanicaEstado === "vigente" && !tecnomecanicaHasta) faltantes.push("Fecha de tecnomecánica");
+      if (!transitoCiudad.trim()) faltantes.push("Tránsito");
+      if (prenda && !prendaEntidad.trim()) faltantes.push("Entidad de la prenda");
+      if (!estadoGeneral.trim()) faltantes.push("Estado general");
+      if (faltantes.length > 0) {
+        setCamposError(`Completa estos campos obligatorios: ${faltantes.join(", ")}.`);
+        return;
+      }
+      detallesFinal = construirDetallesVehiculo(
+        { duenos, kilometraje, traccion, mantenimientosAlDia, clutchNuevo, soatHasta, tecnomecanicaEstado, tecnomecanicaHasta, transitoCiudad, prenda, prendaEntidad, estadoGeneral },
+        categoria
+      );
     }
     onGuardar({
       nombre: nombre.trim(),
       categoria,
       precioBase: Number(precioBase),
       precioMinimo: precioMinimo === "" ? null : Number(precioMinimo),
-      detalles: detalles.trim(),
+      detalles: detallesFinal,
       notas: notas.trim(),
       canales,
       fotos,
+      ...(esVehiculoOMoto ? {
+        anioModelo: Number(anioModelo),
+        kilometraje: Number(kilometraje),
+        duenos: Number(duenos),
+        traccion: categoria === "vehiculo" ? traccion : "",
+        mantenimientosAlDia: categoria === "vehiculo" ? mantenimientosAlDia : null,
+        clutchNuevo: categoria === "vehiculo" ? clutchNuevo : false,
+        soatHasta,
+        tecnomecanicaEstado,
+        tecnomecanicaHasta: tecnomecanicaEstado === "vigente" ? tecnomecanicaHasta : "",
+        transitoCiudad: transitoCiudad.trim(),
+        prenda,
+        prendaEntidad: prenda ? prendaEntidad.trim() : "",
+        estadoGeneral: estadoGeneral.trim(),
+      } : {}),
     });
   };
 
@@ -1397,8 +1886,76 @@ function ProductoForm({ inicial, onCancel, onGuardar }) {
         <PrecioInput style={styles.input} placeholder="Opcional — el piso hasta donde puede negociar el equipo" value={precioMinimo} onChange={setPrecioMinimo} />
         {precioError && <div style={styles.errorText}>{precioError}</div>}
 
-        <div style={styles.smallLabel}>DETALLES</div>
-        <textarea style={styles.textarea} placeholder="Ej: 2019 · 45.000 km · Automático" value={detalles} onChange={(e) => setDetalles(e.target.value)} />
+        {esVehiculoOMoto ? (
+          <>
+            <div style={styles.eyebrow}>CARACTERÍSTICAS OBLIGATORIAS</div>
+
+            <div style={styles.smallLabel}>AÑO MODELO</div>
+            <input style={styles.input} type="number" placeholder="Ej: 2023" value={anioModelo} onChange={(e) => setAnioModelo(e.target.value)} />
+
+            <div style={styles.smallLabel}>KILOMETRAJE</div>
+            <input style={styles.input} type="number" placeholder="Ej: 80000" value={kilometraje} onChange={(e) => setKilometraje(e.target.value)} />
+
+            <div style={styles.smallLabel}>NÚMERO DE DUEÑOS</div>
+            <input style={styles.input} type="number" min="1" value={duenos} onChange={(e) => setDuenos(e.target.value)} />
+
+            {categoria === "vehiculo" && (
+              <>
+                <div style={styles.smallLabel}>TRACCIÓN</div>
+                <select style={styles.input} value={traccion} onChange={(e) => setTraccion(e.target.value)}>
+                  <option value="">Selecciona…</option>
+                  <option value="4x4 / 4WD">4x4 / 4WD</option>
+                  <option value="4x2 / Tracción delantera">4x2 / Tracción delantera</option>
+                  <option value="Tracción trasera">Tracción trasera</option>
+                </select>
+
+                <label style={styles.checkboxRow}>
+                  <input type="checkbox" checked={mantenimientosAlDia} onChange={(e) => setMantenimientosAlDia(e.target.checked)} />
+                  Todos los mantenimientos al día
+                </label>
+                <label style={styles.checkboxRow}>
+                  <input type="checkbox" checked={clutchNuevo} onChange={(e) => setClutchNuevo(e.target.checked)} />
+                  Clutch nuevo
+                </label>
+              </>
+            )}
+
+            <div style={styles.smallLabel}>SOAT VIGENTE HASTA</div>
+            <input style={styles.input} type="date" value={soatHasta} onChange={(e) => setSoatHasta(e.target.value)} />
+
+            <div style={styles.smallLabel}>TECNOMECÁNICA</div>
+            <select style={styles.input} value={tecnomecanicaEstado} onChange={(e) => setTecnomecanicaEstado(e.target.value)}>
+              <option value="">Selecciona…</option>
+              <option value="vigente">Vigente hasta…</option>
+              <option value="no_aplica">Aún no aplica</option>
+              <option value="vencida">Vencida</option>
+            </select>
+            {tecnomecanicaEstado === "vigente" && (
+              <input style={{ ...styles.input, marginTop: 8 }} type="date" value={tecnomecanicaHasta} onChange={(e) => setTecnomecanicaHasta(e.target.value)} />
+            )}
+
+            <div style={styles.smallLabel}>TRÁNSITO DE</div>
+            <input style={styles.input} placeholder="Ej: Medellín" value={transitoCiudad} onChange={(e) => setTransitoCiudad(e.target.value)} />
+
+            <label style={styles.checkboxRow}>
+              <input type="checkbox" checked={prenda} onChange={(e) => setPrenda(e.target.checked)} />
+              Tiene prenda vigente
+            </label>
+            {prenda && (
+              <input style={styles.input} placeholder="Entidad (ej: Finesa)" value={prendaEntidad} onChange={(e) => setPrendaEntidad(e.target.value)} />
+            )}
+
+            <div style={styles.smallLabel}>ESTADO GENERAL</div>
+            <input style={styles.input} placeholder="Ej: Excelente estado general" value={estadoGeneral} onChange={(e) => setEstadoGeneral(e.target.value)} />
+
+            {camposError && <div style={styles.errorText}>{camposError}</div>}
+          </>
+        ) : (
+          <>
+            <div style={styles.smallLabel}>DETALLES</div>
+            <textarea style={styles.textarea} placeholder="Ej: 2019 · 45.000 km · Automático" value={detalles} onChange={(e) => setDetalles(e.target.value)} />
+          </>
+        )}
 
         <div style={styles.smallLabel}>NOTAS INTERNAS (solo para el equipo)</div>
         <textarea style={styles.textarea} placeholder="Ej: incluye rines nuevos, el cliente pidió separar el sofá…" value={notas} onChange={(e) => setNotas(e.target.value)} />
@@ -1446,7 +2003,7 @@ function agruparPorMes(vendidos) {
     .map(([key, val]) => val);
 }
 
-function Historial({ productos, esAdmin, sesion, onCambiarEstado, onEliminar, onVolver }) {
+function Historial({ productos, esAdmin, sesion, comisionistas, onCambiarEstado, onEliminar, onVolver }) {
   const [detalle, setDetalle] = useState(null);
   const [search, setSearch] = useState("");
 
@@ -1463,6 +2020,7 @@ function Historial({ productos, esAdmin, sesion, onCambiarEstado, onEliminar, on
         producto={detalle}
         esAdmin={esAdmin}
         sesion={sesion}
+        comisionistas={comisionistas}
         onBack={() => setDetalle(null)}
         onEditar={() => setDetalle(null)}
         onCambiarEstado={async (id, estado, extra) => { await onCambiarEstado(id, estado, extra); setDetalle(null); }}
@@ -2099,6 +2657,9 @@ const styles = {
   cancelBtn: { flex: 1, background: "#262019", border: "none", color: "#B0A89B", borderRadius: 10, padding: "12px", fontSize: 13, fontWeight: 600, cursor: "pointer" },
   confirmSoldBtn: { flex: 2, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: "#C23B2E", color: "#FFFFFF", border: "none", borderRadius: 10, padding: "12px", fontSize: 13, fontWeight: 700, cursor: "pointer", boxShadow: "0 6px 16px rgba(0,0,0,0.3)" },
   whatsappBtn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 7, background: "#25D366", color: "#0B1F14", border: "none", borderRadius: 10, padding: "12px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginTop: 9, width: "100%", boxShadow: "0 6px 16px rgba(37,211,102,0.25)" },
+  whatsappBtnInterno: { display: "flex", alignItems: "center", justifyContent: "center", gap: 7, background: "#3A362E", color: "#F3EFE8", border: "none", borderRadius: 10, padding: "12px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginTop: 9, width: "100%" },
+  whatsappNota: { fontSize: 11.5, color: "#8B8477", lineHeight: 1.4, marginTop: 7, textAlign: "center" },
+  checkboxRow: { display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: "#3A362E", padding: "10px 2px", cursor: "pointer" },
   deleteConfirmBtn: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: "#0F0D0C", color: "#FFFFFF", border: "1px solid #332C25", borderRadius: 10, padding: "12px", fontSize: 13, fontWeight: 700, cursor: "pointer" },
 
   formWrap: { display: "flex", flexDirection: "column" },
